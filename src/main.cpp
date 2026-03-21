@@ -1,57 +1,83 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <Adafruit_SHT31.h>
 #include <Adafruit_BMP085.h>
+#include <Adafruit_INA219.h>
 
-#define SDA_PIN 6
-#define SCL_PIN 5
+// ─── WiFi ────────────────────────────────
+const char* SSID     = "Ire y Mau";
+const char* PASSWORD = "Lady-350!";
 
-// Altitud de Embalse en metros
-#define ALTITUD_M 780.0
+// ─── Sensores ────────────────────────────
+Adafruit_SHT31   sht31;
+Adafruit_BMP085  bmp;
+Adafruit_INA219 ina219(0x41);
 
-Adafruit_SHT31 sht31;
-Adafruit_BMP085 bmp;
-bool sht_ok, bmp_ok;
+WebServer server(80);
+
+// ─── Altitud Embalse ─────────────────────
+const float ALTITUD_M = 780.0;
+
+void handleRoot() {
+  float temp_sht = sht31.readTemperature();
+  float hum      = sht31.readHumidity();
+  float temp_bmp = bmp.readTemperature();
+  float pres_abs = bmp.readPressure() / 100.0;
+  float pres_qnh = bmp.readSealevelPressure(ALTITUD_M) / 100.0;
+  float voltage  = ina219.getBusVoltage_V();
+  float current  = ina219.getCurrent_mA();
+  float power    = ina219.getPower_mW();
+
+  String body = "=== Estacion Meteorologica ===\n\n";
+
+  body += "[SHT31]\n";
+  body += "  Temperatura : " + String(temp_sht, 2) + " C\n";
+  body += "  Humedad     : " + String(hum, 2) + " %\n\n";
+
+  body += "[BMP180]\n";
+  body += "  Temperatura : " + String(temp_bmp, 2) + " C\n";
+  body += "  Presion abs : " + String(pres_abs, 1) + " hPa\n";
+  body += "  Presion QNH : " + String(pres_qnh, 1) + " hPa\n\n";
+
+  body += "[INA219]\n";
+  body += "  Voltaje     : " + String(voltage, 3) + " V\n";
+  body += "  Corriente   : " + String(current, 1) + " mA\n";
+  body += "  Potencia    : " + String(power, 1) + " mW\n\n";
+
+  body += "==============================\n";
+
+  server.send(200, "text/plain", body);
+}
 
 void setup() {
   Serial.begin(115200);
-  delay(2000);
-  Wire.begin(SDA_PIN, SCL_PIN);
+  delay(1000);
 
-  sht_ok = sht31.begin(0x44);
-  bmp_ok = bmp.begin();
+  Wire.begin(6, 5);
 
-  Serial.printf("[SHT31]  %s\n", sht_ok ? "OK" : "NO DETECTADO");
-  Serial.printf("[BMP180] %s\n", bmp_ok ? "OK" : "NO DETECTADO");
-  Serial.println();
+  // Sensores
+  sht31.begin(0x44)  ? Serial.println("[OK] SHT31")   : Serial.println("[ERROR] SHT31");
+  bmp.begin()        ? Serial.println("[OK] BMP180")  : Serial.println("[ERROR] BMP180");
+  ina219.begin()     ? Serial.println("[OK] INA219")  : Serial.println("[ERROR] INA219");
+
+  // WiFi
+  Serial.printf("Conectando a %s", SSID);
+  WiFi.begin(SSID, PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n[OK] WiFi conectado");
+  Serial.print("[OK] IP: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", handleRoot);
+  server.begin();
+  Serial.println("[OK] HTTP server iniciado");
 }
 
 void loop() {
-  if (sht_ok) {
-    float t = sht31.readTemperature();
-    float h = sht31.readHumidity();
-    if (!isnan(t) && !isnan(h))
-      Serial.printf("SHT31  | %.2f °C | %.1f %%HR\n", t, h);
-    else
-      Serial.println("SHT31  | ERROR de lectura");
-  }
-
-  if (bmp_ok) {
-    float t   = bmp.readTemperature();
-    float pres_abs = bmp.readPressure() / 100.0;  // hPa local
-
-    // Dentro del loop, después de leer el BMP180:
-    float pres_qnh = pres_abs / pow(1.0 - (ALTITUD_M / 44330.0), 5.255);
-    Serial.printf("BMP180 | %.2f °C | %.2f hPa (abs) | %.2f hPa (QNH)\n", bmp.readTemperature(), pres_abs, pres_qnh);
-  }
-
-  // Cross-check de temperatura entre sensores
-  if (sht_ok && bmp_ok) {
-    float delta = abs(sht31.readTemperature() - bmp.readTemperature());
-    if (delta > 3.0)
-      Serial.printf("  ⚠ Delta temp: %.1f °C — revisar posicionamiento\n", delta);
-  }
-
-  Serial.println("---");
-  delay(2000);
+  server.handleClient();
 }
