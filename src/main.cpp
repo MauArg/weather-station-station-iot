@@ -106,6 +106,7 @@ bool connectWiFi() {
 bool connectMQTT() {
     mqtt.setServer(MQTT_BROKER, MQTT_PORT);
     mqtt.setCallback(mqttCallback);
+    mqtt.setBufferSize(512);
 
     if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
         LOG_V("MQTT conectado");
