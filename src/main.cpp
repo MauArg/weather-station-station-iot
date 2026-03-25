@@ -182,6 +182,9 @@ void handleCommand(const Command& cmd) {
             mqtt.publish(TOPIC_STATUS, buf, false);
             mqtt.loop();
             delay(100);
+            mqtt.publish(TOPIC_CMD, "", true);  // limpiar retained
+            mqtt.loop();
+            delay(100);
             publishTelemetry();
             goToDeepSleep();
             break;
