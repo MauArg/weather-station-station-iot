@@ -36,7 +36,7 @@
 #define INA219_SYSTEM_ADDR  0x40      // INA219 consumo ESP32
 
 // ─── Deep sleep ───────────────────────────────────────────────────────────────
-#define SLEEP_INTERVAL_SEC  30   // 300s = 5 minutos (modo normal)
+#define SLEEP_INTERVAL_SEC  60   // 300s = 5 minutos (modo normal)
 
 // ─── OTA / Service mode ───────────────────────────────────────────────────────
 #define OTA_HOSTNAME        "weather-station-01"
