@@ -7,6 +7,7 @@
 #include "config.h"
 #include "command.h"
 #include "service_mode.h"
+#include "sensors.h"
 
 // ─── Clientes globales ────────────────────────────────────────────────────────
 WiFiClient   wifiClient;
@@ -40,6 +41,7 @@ void setup() {
     LOG_V("=== Boot #%u ===  Firmware: %s", rtc_bootCount, FIRMWARE_VERSION);
 
     Wire.begin(I2C_SDA, I2C_SCL);
+    sensors_init();
 
     // ── Si estábamos en service mode antes del reinicio, retomar inmediatamente
     if (serviceMode_isActive()) {
@@ -221,19 +223,29 @@ void handleCommand(const Command& cmd) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Telemetría (stub — integrar con tus sensores existentes)
+// Telemetría
 // ═════════════════════════════════════════════════════════════════════════════
 void publishTelemetry() {
-    // TODO: reemplazar con lecturas reales de SHT31 y BMP180
-    JsonDocument doc;
-    doc["temperature_c"]  = 22.5;
-    doc["humidity_pct"]   = 77.0;
-    doc["pressure_hpa"]   = 930.0;
-    doc["pressure_qnh"]   = 1020.0;
-    doc["firmware"]       = FIRMWARE_VERSION;
-    doc["boot_count"]     = rtc_bootCount;
+    SensorData s = sensors_read();
 
-    char buf[256];
+    JsonDocument doc;
+
+    if (!isnan(s.temperature_c))     doc["temperature_c"]     = s.temperature_c;
+    if (!isnan(s.humidity_pct))      doc["humidity_pct"]      = s.humidity_pct;
+    if (!isnan(s.bmp_temperature_c)) doc["bmp_temperature_c"] = s.bmp_temperature_c;
+    if (!isnan(s.pressure_hpa))      doc["pressure_hpa"]      = s.pressure_hpa;
+    if (!isnan(s.pressure_qnh))      doc["pressure_qnh"]      = s.pressure_qnh;
+    if (!isnan(s.solar_v))           doc["solar_v"]           = s.solar_v;
+    if (!isnan(s.solar_mA))          doc["solar_mA"]          = s.solar_mA;
+    if (!isnan(s.solar_mW))          doc["solar_mW"]          = s.solar_mW;
+    if (!isnan(s.system_v))          doc["system_v"]          = s.system_v;
+    if (!isnan(s.system_mA))         doc["system_mA"]         = s.system_mA;
+    if (!isnan(s.system_mW))         doc["system_mW"]         = s.system_mW;
+
+    doc["firmware"]   = FIRMWARE_VERSION;
+    doc["boot_count"] = rtc_bootCount;
+
+    char buf[512];
     serializeJson(doc, buf);
     mqtt.publish(TOPIC_TELEMETRY, buf, false);
     mqtt.loop();

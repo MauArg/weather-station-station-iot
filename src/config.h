@@ -29,6 +29,11 @@
 #define I2C_SDA             6
 #define I2C_SCL             5
 
+// ─── Sensores ─────────────────────────────────────────────────────────────────
+#define ALTITUDE_M          780.0f    // Altitud del lugar en metros SNM
+#define INA219_SOLAR_ADDR   0x41      // INA219 panel solar
+#define INA219_SYSTEM_ADDR  0x40      // INA219 consumo ESP32
+
 // ─── Deep sleep ───────────────────────────────────────────────────────────────
 #define SLEEP_INTERVAL_SEC  300   // 5 minutos (modo normal)
 
