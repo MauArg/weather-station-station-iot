@@ -87,31 +87,36 @@ bool connectWiFi() {
         LOG_E("Fallo al configurar IP estática");
     }
 
-    // Si tenemos canal y BSSID cacheados, conectar directo sin escanear
-    if (rtc_wifiChannel > 0) {
-        LOG_V("WiFi: usando canal cacheado %d", rtc_wifiChannel);
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD, rtc_wifiChannel, rtc_wifiBssid, true);
-    } else {
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    }
-    LOG_V("Conectando WiFi...");
-
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED) {
-        if (millis() - start > WIFI_TIMEOUT_MS) {
-            LOG_E("WiFi timeout");
-            rtc_wifiChannel = 0;  // invalidar caché para el próximo intento
-            return false;
+    for (int attempt = 1; attempt <= WIFI_MAX_RETRIES; attempt++) {
+        // Primer intento usa caché si está disponible; los siguientes escanean
+        if (attempt == 1 && rtc_wifiChannel > 0) {
+            LOG_V("WiFi: intento %d/%d (canal cacheado %d)", attempt, WIFI_MAX_RETRIES, rtc_wifiChannel);
+            WiFi.begin(WIFI_SSID, WIFI_PASSWORD, rtc_wifiChannel, rtc_wifiBssid, true);
+        } else {
+            LOG_V("WiFi: intento %d/%d (scan)", attempt, WIFI_MAX_RETRIES);
+            rtc_wifiChannel = 0;
+            WiFi.disconnect(false);
+            delay(100);
+            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
         }
-        delay(200);
+
+        uint32_t start = millis();
+        while (WiFi.status() != WL_CONNECTED) {
+            if (millis() - start > WIFI_TIMEOUT_MS) break;
+            delay(200);
+        }
+
+        if (WiFi.status() == WL_CONNECTED) {
+            rtc_wifiChannel = WiFi.channel();
+            memcpy(rtc_wifiBssid, WiFi.BSSID(), 6);
+            LOG_V("WiFi OK — IP: %s  canal: %d  intento: %d", WiFi.localIP().toString().c_str(), rtc_wifiChannel, attempt);
+            return true;
+        }
+
+        LOG_E("WiFi timeout (intento %d/%d)", attempt, WIFI_MAX_RETRIES);
     }
 
-    // Cachear canal y BSSID para el próximo wake
-    rtc_wifiChannel = WiFi.channel();
-    memcpy(rtc_wifiBssid, WiFi.BSSID(), 6);
-
-    LOG_V("WiFi OK — IP: %s  canal: %d", WiFi.localIP().toString().c_str(), rtc_wifiChannel);
-    return true;
+    return false;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
