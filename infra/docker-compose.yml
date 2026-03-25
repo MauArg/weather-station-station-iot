@@ -1,0 +1,50 @@
+services:
+
+  # ─── MQTT Broker ─────────────────────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"     # MQTT
+      # - "9001:9001"   # WebSockets (descomentar si lo necesitás en el futuro)
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-h", "localhost", "-t", "$$SYS/#", "-C", "1", "-u", "weather_station_iot", "-P", "${MQTT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─── Próximos servicios (descomentar cuando corresponda) ──────────────────────
+
+  # influxdb:
+  #   image: influxdb:2
+  #   container_name: influxdb
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8086:8086"
+  #   volumes:
+  #     - ./influxdb/data:/var/lib/influxdb2
+  #     - ./influxdb/config:/etc/influxdb2
+  #   environment:
+  #     - DOCKER_INFLUXDB_INIT_MODE=setup
+  #     - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USER}
+  #     - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD}
+  #     - DOCKER_INFLUXDB_INIT_ORG=weather-station
+  #     - DOCKER_INFLUXDB_INIT_BUCKET=telemetry
+
+  # n8n:
+  #   image: n8nio/n8n
+  #   container_name: n8n
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5678:5678"
+  #   volumes:
+  #     - ./n8n/data:/home/node/.n8n
+  #   environment:
+  #     - N8N_BASIC_AUTH_ACTIVE=true
+  #     - N8N_BASIC_AUTH_USER=${N8N_USER}
+  #     - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}

@@ -1,93 +1,248 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
-#include <WebServer.h>
-#include <Adafruit_SHT31.h>
-#include <Adafruit_BMP085.h>
-#include <Adafruit_INA219.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
 
-// ─── WiFi ────────────────────────────────
-const char* SSID     = "Ire y Mau";
-const char* PASSWORD = "Lady-350!";
+#include "config.h"
+#include "command.h"
+#include "service_mode.h"
 
-// ─── Sensores ────────────────────────────
-Adafruit_SHT31   sht31;
-Adafruit_BMP085  bmp;
-Adafruit_INA219 ina219_solar(0x41);
-Adafruit_INA219 ina219_system(0x40);
+// ─── Clientes globales ────────────────────────────────────────────────────────
+WiFiClient   wifiClient;
+PubSubClient mqtt(wifiClient);
 
-WebServer server(80);
+// ─── Estado RTC para ciclo normal ─────────────────────────────────────────────
+RTC_DATA_ATTR uint32_t rtc_bootCount = 0;
 
-// ─── Altitud Embalse ─────────────────────
-const float ALTITUD_M = 780.0;
+// ─── Buffers para comando MQTT (llenados en callback) ─────────────────────────
+static String  pendingCmdPayload = "";
+static bool    cmdReceived       = false;
 
-void handleRoot() {
-  float temp_sht = sht31.readTemperature();
-  float hum      = sht31.readHumidity();
-  float temp_bmp = bmp.readTemperature();
-  float pres_abs = bmp.readPressure() / 100.0;
-  float pres_qnh = bmp.readSealevelPressure(ALTITUD_M) / 100.0;
-  float voltage_solar  = ina219_solar.getBusVoltage_V();
-  float current_solar  = ina219_solar.getCurrent_mA();
-  float power_solar    = ina219_solar.getPower_mW();
-  float voltage_system = ina219_system.getBusVoltage_V();
-  float current_system = ina219_system.getCurrent_mA();
-  float power_system   = ina219_system.getPower_mW();
+// ─── Prototipos ───────────────────────────────────────────────────────────────
+bool  connectWiFi();
+bool  connectMQTT();
+void  mqttCallback(char* topic, byte* payload, unsigned int length);
+Command waitForRetainedCommand();
+void  publishTelemetry();
+void  handleCommand(const Command& cmd);
+void  goToDeepSleep();
 
-  String body = "=== Estacion Meteorologica ===\n\n";
-
-  body += "[SHT31]\n";
-  body += "  Temperatura : " + String(temp_sht, 2) + " C\n";
-  body += "  Humedad     : " + String(hum, 2) + " %\n\n";
-
-  body += "[BMP180]\n";
-  body += "  Temperatura : " + String(temp_bmp, 2) + " C\n";
-  body += "  Presion abs : " + String(pres_abs, 1) + " hPa\n";
-  body += "  Presion QNH : " + String(pres_qnh, 1) + " hPa\n\n";
-
-  body += "[INA219 Solar]\n";
-  body += "  Voltaje     : " + String(voltage_solar, 3) + " V\n";
-  body += "  Corriente   : " + String(current_solar, 1) + " mA\n";
-  body += "  Potencia    : " + String(power_solar, 1) + " mW\n\n";
-
-  body += "[INA219 System]\n";
-  body += "  Voltaje     : " + String(voltage_system, 3) + " V\n";
-  body += "  Corriente   : " + String(current_system, 1) + " mA\n";
-  body += "  Potencia    : " + String(power_system, 1) + " mW\n\n";
-
-  body += "==============================\n";
-
-  server.send(200, "text/plain", body);
-}
-
+// ═════════════════════════════════════════════════════════════════════════════
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
+    #if LOG_LEVEL > 0
+        Serial.begin(115200);
+        delay(2000);
+        Serial.println("=== Boot ===");
+    #endif
 
-  Wire.begin(6, 5);
+    rtc_bootCount++;
+    LOG_V("=== Boot #%u ===  Firmware: %s", rtc_bootCount, FIRMWARE_VERSION);
 
-  // Sensores
-  sht31.begin(0x44)  ? Serial.println("[OK] SHT31")   : Serial.println("[ERROR] SHT31");
-  bmp.begin()        ? Serial.println("[OK] BMP180")  : Serial.println("[ERROR] BMP180");
-  ina219_solar.begin()     ? Serial.println("[OK] INA219_Solar")  : Serial.println("[ERROR] INA219_Solar");
-  ina219_system.begin()    ? Serial.println("[OK] INA219_System") : Serial.println("[ERROR] INA219_System");
+    Wire.begin(I2C_SDA, I2C_SCL);
 
-  // WiFi
-  Serial.printf("Conectando a %s", SSID);
-  WiFi.begin(SSID, PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\n[OK] WiFi conectado");
-  Serial.print("[OK] IP: ");
-  Serial.println(WiFi.localIP());
+    // ── Si estábamos en service mode antes del reinicio, retomar inmediatamente
+    if (serviceMode_isActive()) {
+        LOG_V("RTC indica service mode activo — retomando sin leer MQTT");
+        if (!connectWiFi()) { goToDeepSleep(); return; }
+        connectMQTT();
+        // Crear un Command dummy para que evaluate() entre al run() directamente
+        Command resumeCmd;
+        resumeCmd.type        = CommandType::MAINTENANCE;
+        resumeCmd.timeout_min = rtc_serviceTimeoutMin;
+        resumeCmd.valid       = true;
+        serviceMode_evaluate(mqtt, resumeCmd);
+        return;
+    }
 
-  server.on("/", handleRoot);
-  server.begin();
-  Serial.println("[OK] HTTP server iniciado");
+    // ── Ciclo normal ──────────────────────────────────────────────────────────
+    if (!connectWiFi()) { goToDeepSleep(); return; }
+    if (!connectMQTT()) { goToDeepSleep(); return; }
+
+    // Leer comando retenido del broker (esperar hasta MQTT_RETAINED_WAIT_MS)
+    Command cmd = waitForRetainedCommand();
+
+    // ── Despachar según comando ────────────────────────────────────────────────
+    handleCommand(cmd);
 }
 
 void loop() {
-  server.handleClient();
+    // No se usa: el dispositivo sale por deep sleep o reinicio
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Conexión WiFi
+// ═════════════════════════════════════════════════════════════════════════════
+bool connectWiFi() {
+    WiFi.mode(WIFI_STA);
+
+    // IP estática
+    if (!WiFi.config(WIFI_STATIC_IP, WIFI_GATEWAY, WIFI_SUBNET, WIFI_DNS)) {
+        LOG_E("Fallo al configurar IP estática");
+    }
+
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    LOG_V("Conectando WiFi...");
+
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        if (millis() - start > WIFI_TIMEOUT_MS) {
+            LOG_E("WiFi timeout");
+            return false;
+        }
+        delay(200);
+    }
+    LOG_V("WiFi OK — IP: %s", WiFi.localIP().toString().c_str());
+    return true;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Conexión MQTT
+// ═════════════════════════════════════════════════════════════════════════════
+bool connectMQTT() {
+    mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+    mqtt.setCallback(mqttCallback);
+
+    if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
+        LOG_V("MQTT conectado");
+        mqtt.subscribe(TOPIC_CMD);
+        return true;
+    }
+    LOG_E("MQTT error: %d", mqtt.state());
+    return false;
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    if (strcmp(topic, TOPIC_CMD) == 0) {
+        pendingCmdPayload = "";
+        for (unsigned int i = 0; i < length; i++) {
+            pendingCmdPayload += (char)payload[i];
+        }
+        cmdReceived = true;
+        LOG_V("CMD recibido: %s", pendingCmdPayload.c_str());
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Esperar mensaje retenido del broker
+// ═════════════════════════════════════════════════════════════════════════════
+Command waitForRetainedCommand() {
+    cmdReceived = false;
+    uint32_t start = millis();
+
+    while (!cmdReceived && (millis() - start) < MQTT_RETAINED_WAIT_MS) {
+        mqtt.loop();
+        delay(20);
+    }
+
+    if (!cmdReceived) {
+        LOG_V("Sin comando retenido — flujo normal");
+        Command none;
+        none.type  = CommandType::NONE;
+        none.valid = true;
+        return none;
+    }
+
+    return parseCommand(pendingCmdPayload);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Despacho de comandos
+// ═════════════════════════════════════════════════════════════════════════════
+void handleCommand(const Command& cmd) {
+    if (!cmd.valid) {
+        LOG_E("Comando inválido — continuando con flujo normal");
+        publishTelemetry();
+        goToDeepSleep();
+        return;
+    }
+
+    switch (cmd.type) {
+
+        case CommandType::NONE:
+            // Flujo normal: medir y dormir
+            publishTelemetry();
+            goToDeepSleep();
+            break;
+
+        case CommandType::MAINTENANCE:
+            // Delegar completamente al módulo de service mode
+            serviceMode_evaluate(mqtt, cmd);
+            // serviceMode_evaluate no retorna (llama a goToDeepSleep internamente)
+            break;
+
+        case CommandType::PING: {
+            // Responder con status y continuar ciclo normal
+            JsonDocument doc;
+            doc["firmware"]   = FIRMWARE_VERSION;
+            doc["boot_count"] = rtc_bootCount;
+            doc["state"]      = "alive";
+            char buf[128];
+            serializeJson(doc, buf);
+            mqtt.publish(TOPIC_STATUS, buf, false);
+            mqtt.loop();
+            delay(100);
+            publishTelemetry();
+            goToDeepSleep();
+            break;
+        }
+
+        case CommandType::REBOOT:
+            LOG_V("Comando reboot recibido");
+            mqtt.publish(TOPIC_STATUS, "{\"state\":\"rebooting\"}", false);
+            mqtt.loop();
+            delay(200);
+            ESP.restart();
+            break;
+
+        case CommandType::CONFIG:
+            // TODO: implementar cambio de config en NVS
+            LOG_V("Comando config — pendiente de implementación");
+            publishTelemetry();
+            goToDeepSleep();
+            break;
+
+        case CommandType::CALIBRATE:
+            // TODO: implementar rutina de calibración
+            LOG_V("Comando calibrate — pendiente de implementación");
+            publishTelemetry();
+            goToDeepSleep();
+            break;
+
+        default:
+            LOG_E("Comando no manejado — flujo normal");
+            publishTelemetry();
+            goToDeepSleep();
+            break;
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Telemetría (stub — integrar con tus sensores existentes)
+// ═════════════════════════════════════════════════════════════════════════════
+void publishTelemetry() {
+    // TODO: reemplazar con lecturas reales de SHT31 y BMP180
+    JsonDocument doc;
+    doc["temperature_c"]  = 22.5;
+    doc["humidity_pct"]   = 77.0;
+    doc["pressure_hpa"]   = 930.0;
+    doc["pressure_qnh"]   = 1020.0;
+    doc["firmware"]       = FIRMWARE_VERSION;
+    doc["boot_count"]     = rtc_bootCount;
+
+    char buf[256];
+    serializeJson(doc, buf);
+    mqtt.publish(TOPIC_TELEMETRY, buf, false);
+    mqtt.loop();
+    LOG_V("Telemetría publicada");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Deep sleep
+// ═════════════════════════════════════════════════════════════════════════════
+void goToDeepSleep() {
+    LOG_V("Entrando en deep sleep (%d seg)", SLEEP_INTERVAL_SEC);
+    WiFi.disconnect(true);
+    delay(100);
+    esp_deep_sleep((uint64_t)SLEEP_INTERVAL_SEC * 1000000ULL);
 }
