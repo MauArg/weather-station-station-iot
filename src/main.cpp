@@ -41,7 +41,6 @@ void setup() {
     LOG_V("=== Boot #%u ===  Firmware: %s", rtc_bootCount, FIRMWARE_VERSION);
 
     Wire.begin(I2C_SDA, I2C_SCL);
-    sensors_init();
 
     // ── Si estábamos en service mode antes del reinicio, retomar inmediatamente
     if (serviceMode_isActive()) {
@@ -63,6 +62,9 @@ void setup() {
 
     // Leer comando retenido del broker (esperar hasta MQTT_RETAINED_WAIT_MS)
     Command cmd = waitForRetainedCommand();
+
+    // Inicializar sensores solo en ciclo normal (no en service mode ni reboot)
+    sensors_init();
 
     // ── Despachar según comando ────────────────────────────────────────────────
     handleCommand(cmd);
