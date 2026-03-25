@@ -9,6 +9,7 @@
 #define WIFI_SSID           "Ire y Mau"
 #define WIFI_PASSWORD       "Lady-350!"
 #define WIFI_TIMEOUT_MS     15000
+#define WIFI_MAX_RETRIES    3
 
 // ─── MQTT ─────────────────────────────────────────────────────────────────────
 #define MQTT_BROKER         "192.168.18.250"   // IP de la Raspberry Pi
@@ -35,7 +36,7 @@
 #define INA219_SYSTEM_ADDR  0x40      // INA219 consumo ESP32
 
 // ─── Deep sleep ───────────────────────────────────────────────────────────────
-#define SLEEP_INTERVAL_SEC  300   // 300s = 5 minutos (modo normal)
+#define SLEEP_INTERVAL_SEC  30   // 300s = 5 minutos (modo normal)
 
 // ─── OTA / Service mode ───────────────────────────────────────────────────────
 #define OTA_HOSTNAME        "weather-station-01"
