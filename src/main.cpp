@@ -245,6 +245,8 @@ void publishTelemetry() {
 // ═════════════════════════════════════════════════════════════════════════════
 void goToDeepSleep() {
     LOG_V("Entrando en deep sleep (%d seg)", SLEEP_INTERVAL_SEC);
+    mqtt.disconnect();
+    delay(200);
     WiFi.disconnect(true);
     delay(100);
     esp_deep_sleep((uint64_t)SLEEP_INTERVAL_SEC * 1000000ULL);
