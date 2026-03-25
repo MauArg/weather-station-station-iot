@@ -14,7 +14,9 @@ WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
 
 // ─── Estado RTC para ciclo normal ─────────────────────────────────────────────
-RTC_DATA_ATTR uint32_t rtc_bootCount = 0;
+RTC_DATA_ATTR uint32_t rtc_bootCount    = 0;
+RTC_DATA_ATTR uint8_t  rtc_wifiChannel  = 0;
+RTC_DATA_ATTR uint8_t  rtc_wifiBssid[6] = {0};
 
 // ─── Buffers para comando MQTT (llenados en callback) ─────────────────────────
 static String  pendingCmdPayload = "";
@@ -85,18 +87,30 @@ bool connectWiFi() {
         LOG_E("Fallo al configurar IP estática");
     }
 
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    // Si tenemos canal y BSSID cacheados, conectar directo sin escanear
+    if (rtc_wifiChannel > 0) {
+        LOG_V("WiFi: usando canal cacheado %d", rtc_wifiChannel);
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD, rtc_wifiChannel, rtc_wifiBssid, true);
+    } else {
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    }
     LOG_V("Conectando WiFi...");
 
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() - start > WIFI_TIMEOUT_MS) {
             LOG_E("WiFi timeout");
+            rtc_wifiChannel = 0;  // invalidar caché para el próximo intento
             return false;
         }
         delay(200);
     }
-    LOG_V("WiFi OK — IP: %s", WiFi.localIP().toString().c_str());
+
+    // Cachear canal y BSSID para el próximo wake
+    rtc_wifiChannel = WiFi.channel();
+    memcpy(rtc_wifiBssid, WiFi.BSSID(), 6);
+
+    LOG_V("WiFi OK — IP: %s  canal: %d", WiFi.localIP().toString().c_str(), rtc_wifiChannel);
     return true;
 }
 
