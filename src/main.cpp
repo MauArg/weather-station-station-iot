@@ -244,6 +244,11 @@ void publishTelemetry() {
     if (!isnan(s.system_mA))         doc["system_mA"]         = s.system_mA;
     if (!isnan(s.system_mW))         doc["system_mW"]         = s.system_mW;
 
+    doc["sht31_ok"]  = s.sht31_ok;
+    doc["bmp_ok"]    = s.bmp_ok;
+    doc["solar_ok"]  = s.solar_ok;
+    doc["system_ok"] = s.system_ok;
+
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
 
