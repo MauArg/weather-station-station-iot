@@ -38,8 +38,13 @@
 #define DIAG_PHOTO_PULLUP_KOHM  10.0f
 
 // Rain sensor: pullup efectivo R1∥R2 = 9.9k∥9.9k = 4.95kΩ
-//   wetness% = (1 - V/3.3) * 100
+// Calibración medida sobre el PCB auxiliar:
+//   V_dry = 3.3V  → 0%   (sensor sin agua, pullup domina)
+//   V_wet = 2.3V  → 100% (sensor completamente mojado)
+//   wetness% = clamp((V_dry - V) / (V_dry - V_wet) * 100, 0, 100)
 #define DIAG_RAIN_PULLUP_KOHM   4.95f
+#define DIAG_RAIN_V_DRY         3.3f   // V medido: sensor seco
+#define DIAG_RAIN_V_WET         2.3f   // V medido: sensor completamente mojado
 
 #define DIAG_ADC_VREF           3.3f
 #define DIAG_ADC_MAX_RAW        4095.0f

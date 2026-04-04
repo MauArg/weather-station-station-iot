@@ -172,12 +172,13 @@ static void sensors_update() {
 
     // ── Rain sensor (ADC GPIO4) ────────────────────────────────────────────────
     // Circuito PCB: 3.3V → R1∥R2(4.95kΩ) → señal → C1(100nF) → GND
-    // Mojado = sensor conduce → V baja; seco = V alta (~3.3V)
-    // wetness% = (1 - V/3.3) * 100
+    // Mojado = sensor conduce → V baja; seco = V alta
+    // Calibración: V_dry=3.3V → 0%, V_wet=2.3V → 100%
+    // wetness% = (V_dry - V) / (V_dry - V_wet) * 100
     {
         int   raw = analogRead(PIN_RAIN_SENSOR);
         float v   = (raw / DIAG_ADC_MAX_RAW) * DIAG_ADC_VREF;
-        float pct = (1.0f - (v / DIAG_ADC_VREF)) * 100.0f;
+        float pct = (DIAG_RAIN_V_DRY - v) / (DIAG_RAIN_V_DRY - DIAG_RAIN_V_WET) * 100.0f;
         if (pct < 0.0f)   pct = 0.0f;
         if (pct > 100.0f) pct = 100.0f;
 
