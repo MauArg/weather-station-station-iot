@@ -6,8 +6,8 @@
 // =============================================================================
 
 // ─── WiFi ─────────────────────────────────────────────────────────────────────
-#define DIAG_WIFI_SSID        "YourSSID"
-#define DIAG_WIFI_PASSWORD    "YourPassword"
+#define DIAG_WIFI_SSID        "Ire y Mau"
+#define DIAG_WIFI_PASSWORD    "Lady-350!"
 #define DIAG_WIFI_TIMEOUT_MS  15000
 
 // IP estática
