@@ -49,6 +49,17 @@
 #define DIAG_ADC_VREF           3.3f
 #define DIAG_ADC_MAX_RAW        4095.0f
 
+// DHT11 — calibración de humedad:
+//   El sensor DHT11 sub-reporta en rangos medios y satura antes del 100%.
+//   Puntos medidos dentro de la caja estanca del sistema:
+//     raw  30% → real  60% (humedad ambiente)
+//     raw  83% → real 100% (condensación máxima)
+//   hum_cal = clamp((raw - RAW_LO) / (RAW_HI - RAW_LO) * (REAL_HI - REAL_LO) + REAL_LO, 0, 100)
+#define DIAG_DHT_HUM_RAW_LO     30.0f   // % raw medido a ~60% HR ambiente
+#define DIAG_DHT_HUM_REAL_LO    60.0f   // % real correspondiente
+#define DIAG_DHT_HUM_RAW_HI     83.0f   // % raw medido con condensación máxima
+#define DIAG_DHT_HUM_REAL_HI   100.0f   // % real correspondiente
+
 // ─── Temporización ────────────────────────────────────────────────────────────
 #define DIAG_DEBOUNCE_MS        50    // debounce interrupción (pulsador manual)
 #define DIAG_DHT_WARMUP_MS    2000    // espera DHT11 tras begin()

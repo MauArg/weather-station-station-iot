@@ -35,8 +35,9 @@ struct DiagState {
     float ds18b20_c    = 0.0f;
     // DHT11
     bool  dht11_ok     = false;
-    float dht11_temp_c = 0.0f;
-    float dht11_hum    = 0.0f;
+    float dht11_temp_c  = 0.0f;
+    float dht11_hum_raw = 0.0f;   // valor directo del sensor
+    float dht11_hum_cal = 0.0f;   // valor calibrado
     // Fotorresistencia (ADC GPIO3)
     int   photo_raw    = 0;
     float photo_v      = 0.0f;
@@ -139,9 +140,17 @@ static void sensors_update() {
         float t = dht.readTemperature();
         float h = dht.readHumidity();
         if (!isnan(t) && !isnan(h)) {
-            state.dht11_temp_c = t;
-            state.dht11_hum    = h;
-            state.dht11_ok     = true;
+            state.dht11_temp_c  = t;
+            state.dht11_hum_raw = h;
+            // Calibración lineal: mapea [RAW_LO..RAW_HI] → [REAL_LO..REAL_HI]
+            float cal = (h - DIAG_DHT_HUM_RAW_LO)
+                      / (DIAG_DHT_HUM_RAW_HI - DIAG_DHT_HUM_RAW_LO)
+                      * (DIAG_DHT_HUM_REAL_HI - DIAG_DHT_HUM_REAL_LO)
+                      + DIAG_DHT_HUM_REAL_LO;
+            if (cal < 0.0f)   cal = 0.0f;
+            if (cal > 100.0f) cal = 100.0f;
+            state.dht11_hum_cal = cal;
+            state.dht11_ok      = true;
         } else {
             state.dht11_ok = false;
         }
@@ -340,8 +349,10 @@ static void handle_root() {
     );
     if (state.dht11_ok) {
         APPEND("<div class='big'>%.1f °C</div>", state.dht11_temp_c);
-        APPEND("<div class='row'><span class='lbl'>Humedad</span><span class='val'>%.1f %%</span></div>",
-               state.dht11_hum);
+        APPEND("<div class='row'><span class='lbl'>Humedad (cal)</span><span class='val'>%.1f %%</span></div>",
+               state.dht11_hum_cal);
+        APPEND("<div class='row'><span class='lbl'>Humedad (raw)</span><span class='val' style='color:#888'>%.1f %%</span></div>",
+               state.dht11_hum_raw);
     } else {
         APPEND("<div class='big' style='color:#f44'>N/A</div>");
     }
@@ -488,7 +499,7 @@ static void handle_json() {
         "{"
         "\"uptime_ms\":%lu,"
         "\"ds18b20\":{\"ok\":%s,\"temp_c\":%.2f},"
-        "\"dht11\":{\"ok\":%s,\"temp_c\":%.2f,\"hum_pct\":%.1f},"
+        "\"dht11\":{\"ok\":%s,\"temp_c\":%.2f,\"hum_pct_cal\":%.1f,\"hum_pct_raw\":%.1f},"
         "\"photo\":{\"raw\":%d,\"voltage\":%.3f,\"kohm\":%.2f,\"label\":\"%s\"},"
         "\"rain\":{\"raw\":%d,\"voltage\":%.3f,\"wetness_pct\":%.1f,\"label\":\"%s\"},"
         "\"anemometer\":{\"count\":%lu,\"last_ms_ago\":%lu},"
@@ -499,7 +510,7 @@ static void handle_json() {
         "}",
         (unsigned long)state.uptime_ms,
         state.ds18b20_ok ? "true" : "false", state.ds18b20_c,
-        state.dht11_ok   ? "true" : "false", state.dht11_temp_c, state.dht11_hum,
+        state.dht11_ok   ? "true" : "false", state.dht11_temp_c, state.dht11_hum_cal, state.dht11_hum_raw,
         state.photo_raw, state.photo_v, state.photo_kohm, state.photo_label,
         state.rain_raw,  state.rain_v,  state.rain_pct,   state.rain_label,
         (unsigned long)state.anem_count, (unsigned long)anem_ago,
@@ -591,13 +602,13 @@ void loop() {
 
         // Log compacto por serial
         Serial.printf(
-            "[%7lus] DS18B20:%s%.1f°C  DHT11:%s%.1f°C/%.0f%%  "
+            "[%7lus] DS18B20:%s%.1f°C  DHT11:%s%.1f°C/%.0f%%(cal)/%.0f%%(raw)  "
             "Photo:%d(%.2fV/%s)  Rain:%d(%.2fV/%.0f%%/%s)  "
             "Anem:%lu  Pluv:%lu  "
             "SysINA:%s%.2fV/%.1fmA  SolINA:%s%.2fV/%.1fmA\n",
             (unsigned long)(state.uptime_ms / 1000),
             state.ds18b20_ok ? "" : "FAIL ", state.ds18b20_c,
-            state.dht11_ok   ? "" : "FAIL ", state.dht11_temp_c, state.dht11_hum,
+            state.dht11_ok   ? "" : "FAIL ", state.dht11_temp_c, state.dht11_hum_cal, state.dht11_hum_raw,
             state.photo_raw, state.photo_v, state.photo_label,
             state.rain_raw,  state.rain_v,  state.rain_pct, state.rain_label,
             (unsigned long)state.anem_count,
