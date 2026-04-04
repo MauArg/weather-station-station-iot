@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Placa Principal — Guía de Soldadura</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
+
+:root {
+  --pcb-dark: #091509;
+  --pcb-green: #132813;
+  --silk: #d0e8b8;
+  --copper: #c8922a;
+  --c-ina: #2979ff;
+  --c-stepup: #ff6d00;
+  --c-esp: #ffd740;
+  --c-npn: #ff3d00;
+  --c-res: #ff8a65;
+  --c-header: #d500f9;
+  --c-pullup: #f50057;
+  --c-scl: #00e5ff;
+  --c-sda: #76ff03;
+  --c-gnd: #ff1744;
+  --c-3v3: #ffab40;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+body{
+  background:var(--pcb-dark);
+  color:var(--silk);
+  font-family:'Share Tech Mono',monospace;
+  font-size:12px;
+  padding:16px 20px;
+}
+
+.page-header{
+  display:flex;
+  align-items:baseline;
+  gap:16px;
+  margin-bottom:6px;
+}
+
+h1{
+  font-family:'Rajdhani',sans-serif;
+  font-size:22px;
+  font-weight:700;
+  color:var(--copper);
+  letter-spacing:3px;
+  text-transform:uppercase;
+}
+
+.badge{
+  font-size:9px;
+  letter-spacing:2px;
+  color:var(--silk);
+  opacity:0.5;
+  border:1px solid rgba(200,146,42,0.3);
+  padding:2px 8px;
+}
+
+.print-btn{
+  background:var(--copper);
+  color:#000;
+  border:none;
+  padding:6px 18px;
+  font-family:'Rajdhani',sans-serif;
+  font-weight:700;
+  font-size:12px;
+  letter-spacing:2px;
+  cursor:pointer;
+  text-transform:uppercase;
+  margin-bottom:14px;
+  display:inline-block;
+}
+.print-btn:hover{background:#d4a44e}
+
+.section{
+  margin-bottom:18px;
+}
+
+.section-title{
+  font-family:'Rajdhani',sans-serif;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:2.5px;
+  color:var(--copper);
+  text-transform:uppercase;
+  border-bottom:1px solid rgba(200,146,42,0.25);
+  padding-bottom:3px;
+  margin-bottom:8px;
+}
+
+table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:10.5px;
+}
+
+th{
+  background:rgba(200,146,42,0.15);
+  color:var(--copper);
+  text-align:left;
+  padding:5px 7px;
+  letter-spacing:1px;
+  font-size:9.5px;
+  font-family:'Rajdhani',sans-serif;
+  font-weight:600;
+}
+
+td{
+  padding:4px 7px;
+  border-bottom:1px solid rgba(255,255,255,0.05);
+  vertical-align:middle;
+}
+
+tr:hover td{background:rgba(255,255,255,0.03)}
+
+.coord{color:var(--copper);font-weight:bold}
+.n3v3{color:var(--c-3v3)}
+.ngnd{color:var(--c-gnd)}
+.nscl{color:var(--c-scl)}
+.nsda{color:var(--c-sda)}
+.nra{color:var(--c-stepup)}
+.nrb{color:var(--c-esp)}
+.ngpio{color:#b9f6ca}
+.nmono{font-family:'Share Tech Mono',monospace}
+
+.two-col{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:16px;
+}
+
+.note{
+  background:rgba(200,146,42,0.08);
+  border-left:2px solid var(--copper);
+  padding:5px 10px;
+  font-size:10px;
+  margin-bottom:8px;
+  opacity:0.9;
+}
+
+.warn{
+  background:rgba(255,23,68,0.08);
+  border-left:2px solid var(--c-gnd);
+  padding:5px 10px;
+  font-size:10px;
+  margin-bottom:8px;
+}
+
+.legend{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px 14px;
+  margin-bottom:14px;
+}
+
+.li{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  font-size:10px;
+}
+
+.ld{
+  width:12px;
+  height:12px;
+  border-radius:2px;
+  flex-shrink:0;
+}
+
+#pcb-wrap{overflow-x:auto;margin-bottom:10px}
+
+/* ── PRINT ──────────────────────────────────────── */
+@media print{
+  @page{size:A4;margin:10mm}
+  body{
+    background:#fff !important;
+    color:#111 !important;
+    padding:0;
+    font-size:9px;
+  }
+  .print-btn{display:none}
+  h1{color:#333 !important}
+  .section-title{color:#333 !important;border-color:#999 !important}
+  th{background:#eee !important;color:#333 !important}
+  td{border-color:#ddd !important}
+  .coord,.n3v3,.ngnd,.nscl,.nsda,.nra,.nrb,.ngpio{color:#333 !important;font-weight:bold}
+  .note,.warn{border-color:#666 !important;background:#f5f5f5 !important;color:#333 !important}
+  .legend{display:none}
+  #pcb-wrap svg{
+    width:100% !important;
+    height:auto !important;
+  }
+  .two-col{grid-template-columns:1fr 1fr}
+  .section{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+
+<button class="print-btn" onclick="window.print()">⬜ Imprimir guía</button>
+
+<div class="page-header">
+  <h1>Placa Principal</h1>
+  <span class="badge">31×26 HOLES · ESP32-C3 SUPERMINI · REV 1.0</span>
+</div>
+<div style="font-size:9px;opacity:0.4;letter-spacing:2px;margin-bottom:14px">ESTACIÓN METEOROLÓGICA SOLAR — EMBALSE, CÓRDOBA, ARG</div>
+
+<!-- ══ PCB DIAGRAM ══════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">Diagrama perfboard — vista desde arriba (soldadura abajo)</div>
+  <div id="pcb-wrap"><svg id="pcb"></svg></div>
+
+  <div class="legend" id="legend"></div>
+</div>
+
+<!-- ══ COMPONENTES ══════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">Componentes — posición y montaje</div>
+  <table>
+    <thead>
+      <tr><th>Componente</th><th>Zona</th><th>Montaje</th><th>Notas</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>INA219 #1 — Solar</td>
+        <td><span class="coord">cols 1–9, rows 1–10</span></td>
+        <td>Header 6× hembra — col 9, rows 3–8</td>
+        <td>I2C <b>0x40</b>. VIN+→panel+ · VIN-→CN3791 VIN</td>
+      </tr>
+      <tr>
+        <td>INA219 #2 — System</td>
+        <td><span class="coord">cols 10–18, rows 1–10</span></td>
+        <td>Header 6× hembra — col 18, rows 3–8</td>
+        <td>I2C <b>0x41</b>. VIN+→CN3791 BAT+ · VIN-→boost IN</td>
+      </tr>
+      <tr>
+        <td>Step-up boost (5V)</td>
+        <td><span class="coord">cols 1–14, rows 11–16</span></td>
+        <td>2× pins por lado corto (VIN col 1 · VOUT col 14)</td>
+        <td>Calibrado a 5V. VIN+ de CN3791 BAT+</td>
+      </tr>
+      <tr>
+        <td>ESP32-C3 SuperMini</td>
+        <td><span class="coord">cols 15–21, rows 11–18</span></td>
+        <td>8× hembra col 15 + 8× hembra col 21</td>
+        <td>Antena hacia fila 1. Pin 5V en (15,11)</td>
+      </tr>
+      <tr>
+        <td>NPN A — BC337 Rail A</td>
+        <td><span class="coord">col 25, rows 12–14</span></td>
+        <td>Through-hole. R_base cols 23–24. R_pd cols 26–27</td>
+        <td>GPIO7 → sensores exteriores</td>
+      </tr>
+      <tr>
+        <td>NPN B — BC337 Rail B</td>
+        <td><span class="coord">col 25, rows 16–18</span></td>
+        <td>Through-hole. R_base cols 23–24. R_pd cols 26–27</td>
+        <td>GPIO8 → sensores enclosure</td>
+      </tr>
+      <tr>
+        <td>R_pullup SCL 4.92kΩ</td>
+        <td><span class="coord">(28,22) → (28,25)</span></td>
+        <td>Through-hole vertical</td>
+        <td>SCL bus → 3V3 bus. Requerida por cable UTP largo</td>
+      </tr>
+      <tr>
+        <td>R_pullup SDA 4.92kΩ</td>
+        <td><span class="coord">(29,23) → (29,25)</span></td>
+        <td>Through-hole vertical</td>
+        <td>SDA bus → 3V3 bus. Requerida por cable UTP largo</td>
+      </tr>
+      <tr>
+        <td>Header inter-board 1×12 (macho)</td>
+        <td><span class="coord">cols 10–21, row 26</span></td>
+        <td>Macho 1×12 en borde inferior</td>
+        <td>Acopla con hembra 1×12 en placa auxiliar JST</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══ BUSES ══════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">Buses — fila completa cols 1–31</div>
+  <table>
+    <thead><tr><th>Fila</th><th>Señal</th><th>Color de cable recomendado</th></tr></thead>
+    <tbody>
+      <tr><td class="coord">22</td><td class="nscl">SCL</td><td>Celeste</td></tr>
+      <tr><td class="coord">23</td><td class="nsda">SDA</td><td>Verde</td></tr>
+      <tr><td class="coord">24</td><td class="ngnd">GND</td><td>Negro</td></tr>
+      <tr><td class="coord">25</td><td class="n3v3">3V3</td><td>Rojo</td></tr>
+      <tr><td class="coord">26</td><td>HEADER INTER-BOARD 1×12</td><td>— (pines, no cable)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══ CONEXIONES ══════════════════════════════════════ -->
+<div class="two-col">
+  <div class="section">
+    <div class="section-title">INA219 #1 — Solar (0x40)</div>
+    <table>
+      <thead><tr><th>Hole</th><th>Pin</th><th>Destino</th></tr></thead>
+      <tbody>
+        <tr><td class="coord">(9,3)</td><td>VCC</td><td class="n3v3">→ 3V3 bus (fila 25)</td></tr>
+        <tr><td class="coord">(9,4)</td><td>GND</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+        <tr><td class="coord">(9,5)</td><td>SCL</td><td class="nscl">→ SCL bus (fila 22)</td></tr>
+        <tr><td class="coord">(9,6)</td><td>SDA</td><td class="nsda">→ SDA bus (fila 23)</td></tr>
+        <tr><td class="coord">(9,7)</td><td>VIN−</td><td>→ cable GND panel solar (al CN3791 VIN)</td></tr>
+        <tr><td class="coord">(9,8)</td><td>VIN+</td><td>→ cable + panel solar</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-title">INA219 #2 — System (0x41)</div>
+    <table>
+      <thead><tr><th>Hole</th><th>Pin</th><th>Destino</th></tr></thead>
+      <tbody>
+        <tr><td class="coord">(18,3)</td><td>VCC</td><td class="n3v3">→ 3V3 bus (fila 25)</td></tr>
+        <tr><td class="coord">(18,4)</td><td>GND</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+        <tr><td class="coord">(18,5)</td><td>SCL</td><td class="nscl">→ SCL bus (fila 22)</td></tr>
+        <tr><td class="coord">(18,6)</td><td>SDA</td><td class="nsda">→ SDA bus (fila 23)</td></tr>
+        <tr><td class="coord">(18,7)</td><td>VIN−</td><td>→ cable GND boost output (lado carga)</td></tr>
+        <tr><td class="coord">(18,8)</td><td>VIN+</td><td>→ CN3791 BAT+</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="section">
+    <div class="section-title">Step-up boost</div>
+    <table>
+      <thead><tr><th>Hole</th><th>Pin</th><th>Destino</th></tr></thead>
+      <tbody>
+        <tr><td class="coord">(1,14)</td><td>VIN+</td><td>→ CN3791 BAT+ (mismo nodo que INA219#2 VIN+)</td></tr>
+        <tr><td class="coord">(1,15)</td><td>VIN−</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+        <tr><td class="coord">(14,14)</td><td>VOUT+</td><td>→ ESP32 5V — hole <span class="coord">(15,11)</span></td></tr>
+        <tr><td class="coord">(14,15)</td><td>VOUT−</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-title">ESP32-C3 SuperMini — pines usados</div>
+    <table>
+      <thead><tr><th>Hole</th><th>GPIO</th><th>Destino</th></tr></thead>
+      <tbody>
+        <tr><td class="coord">(15,11)</td><td>5V</td><td>← Step-up VOUT+ <span class="coord">(14,14)</span></td></tr>
+        <tr><td class="coord">(15,12)</td><td>GND</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+        <tr><td class="coord">(15,13)</td><td>3V3</td><td class="n3v3">→ 3V3 bus (fila 25)</td></tr>
+        <tr><td class="coord">(15,14)</td><td class="ngpio">GPIO4 — DHT11</td><td>→ header inter-board pin 9 <span class="coord">col 18</span></td></tr>
+        <tr><td class="coord">(15,15)</td><td class="ngpio">GPIO3 — pluvióm.</td><td>→ header inter-board pin 8 <span class="coord">col 17</span></td></tr>
+        <tr><td class="coord">(15,16)</td><td class="ngpio">GPIO2 — anemóm.</td><td>→ header inter-board pin 7 <span class="coord">col 16</span></td></tr>
+        <tr><td class="coord">(21,11)</td><td class="nscl">GPIO5 — SCL</td><td class="nscl">→ SCL bus (fila 22)</td></tr>
+        <tr><td class="coord">(21,12)</td><td class="nsda">GPIO6 — SDA</td><td class="nsda">→ SDA bus (fila 23)</td></tr>
+        <tr><td class="coord">(21,13)</td><td class="nra">GPIO7 — Rail A</td><td class="nra">→ R_base NPN A <span class="coord">(23,13)</span></td></tr>
+        <tr><td class="coord">(21,14)</td><td class="nrb">GPIO8 — Rail B</td><td class="nrb">→ R_base NPN B <span class="coord">(23,17)</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="section">
+    <div class="section-title">NPN A — Rail A ext. (GPIO7, BC337)</div>
+    <div class="note">BC337 pinout con plano al frente: izq=C · centro=B · der=E</div>
+    <table>
+      <thead><tr><th>Hole</th><th>Componente</th><th>Red</th></tr></thead>
+      <tbody>
+        <tr><td class="coord">(23,13)</td><td>R_base 2.13kΩ — p1</td><td class="nra">← GPIO7 (21,13)</td></tr>
+        <tr><td class="coord">(24,13)</td><td>R_base 2.13kΩ — p2</td><td>→ nodo Base · bridge→(25,13)</td></tr>
+        <tr><td class="coord">(25,12)</td><td>BC337 — Collector</td><td class="nra">Rail A GND sensores ext. → header pin 5</td></tr>
+        <tr><td class="coord">(25,13)</td><td>BC337 — Base</td><td>Nodo base</td></tr>
+        <tr><td class="coord">(25,14)</td><td>BC337 — Emitter</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+        <tr><td class="coord">(26,13)</td><td>R_pulldown 9.9kΩ — p1</td><td>→ nodo Base · bridge→(25,13)</td></tr>
+        <tr><td class="coord">(27,13)</td><td>R_pulldown 9.9kΩ — p2</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-title">NPN B — Rail B encl. (GPIO8, BC337)</div>
+    <div class="note">Circuito idéntico al NPN A. Solo cambian GPIO y rail de salida.</div>
+    <table>
+      <thead><tr><th>Hole</th><th>Componente</th><th>Red</th></tr></thead>
+      <tbody>
+        <tr><td class="coord">(23,17)</td><td>R_base 2.13kΩ — p1</td><td class="nrb">← GPIO8 (21,14)</td></tr>
+        <tr><td class="coord">(24,17)</td><td>R_base 2.13kΩ — p2</td><td>→ nodo Base · bridge→(25,17)</td></tr>
+        <tr><td class="coord">(25,16)</td><td>BC337 — Collector</td><td class="nrb">Rail B GND sensores enc. → header pin 6</td></tr>
+        <tr><td class="coord">(25,17)</td><td>BC337 — Base</td><td>Nodo base</td></tr>
+        <tr><td class="coord">(25,18)</td><td>BC337 — Emitter</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+        <tr><td class="coord">(26,17)</td><td>R_pulldown 9.9kΩ — p1</td><td>→ nodo Base · bridge→(25,17)</td></tr>
+        <tr><td class="coord">(27,17)</td><td>R_pulldown 9.9kΩ — p2</td><td class="ngnd">→ GND bus (fila 24)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══ HEADER INTER-BOARD ══════════════════════════════ -->
+<div class="section">
+  <div class="section-title">Header inter-board 1×12 — asignación de pines (fila 26)</div>
+  <table>
+    <thead><tr><th>Pin</th><th>Col</th><th>Señal</th><th>Fuente en placa principal</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="coord">col 10</td><td class="ngnd">GND</td><td>Bus GND fila 24</td></tr>
+      <tr><td>2</td><td class="coord">col 11</td><td class="n3v3">3V3</td><td>Bus 3V3 fila 25</td></tr>
+      <tr><td>3</td><td class="coord">col 12</td><td class="nscl">SCL</td><td>Bus SCL fila 22</td></tr>
+      <tr><td>4</td><td class="coord">col 13</td><td class="nsda">SDA</td><td>Bus SDA fila 23</td></tr>
+      <tr><td>5</td><td class="coord">col 14</td><td class="nra">Rail A GND</td><td>NPN A Collector (25,12)</td></tr>
+      <tr><td>6</td><td class="coord">col 15</td><td class="nrb">Rail B GND</td><td>NPN B Collector (25,16)</td></tr>
+      <tr><td>7</td><td class="coord">col 16</td><td class="ngpio">GPIO2 — anemómetro</td><td>ESP32 (15,16)</td></tr>
+      <tr><td>8</td><td class="coord">col 17</td><td class="ngpio">GPIO3 — pluviómetro</td><td>ESP32 (15,15)</td></tr>
+      <tr><td>9</td><td class="coord">col 18</td><td class="ngpio">GPIO4 — DHT11</td><td>ESP32 (15,14)</td></tr>
+      <tr><td>10</td><td class="coord">col 19</td><td class="ngpio">DS18B20 data</td><td style="opacity:0.5">← por asignar (GPIO9 sugerido)</td></tr>
+      <tr><td>11</td><td class="coord">col 20</td><td class="ngpio">ADC — fotoresistor</td><td style="opacity:0.5">← por asignar (GPIO0 sugerido)</td></tr>
+      <tr><td>12</td><td class="coord">col 21</td><td style="opacity:0.4">— spare —</td><td style="opacity:0.4">—</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══ ORDEN DE SOLDADURA ══════════════════════════════ -->
+<div class="section">
+  <div class="section-title">Orden de soldadura recomendado</div>
+  <div class="warn">⚠ Después del paso 8 y antes del paso 11: verificar con multímetro que NO hay cortocircuito entre GND bus (fila 24) y 3V3 bus (fila 25). Medir en los extremos de la placa.</div>
+  <table>
+    <thead><tr><th>#</th><th>Paso</th><th>Razón</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Buses GND y 3V3 — filas 24 y 25</td><td>Base de referencia de alimentación. Todo lo demás depende de estas dos filas</td></tr>
+      <tr><td>2</td><td>Buses SCL y SDA — filas 22 y 23</td><td>I2C antes de los módulos que lo usan</td></tr>
+      <tr><td>3</td><td>Resistencias pull-up SCL y SDA — cols 28–29</td><td>Componentes bajos en zona libre. Fácil ahora, difícil después</td></tr>
+      <tr><td>4</td><td>Resistencias NPN A — (23–24, 13) y (26–27, 13)</td><td>Componentes más bajos de la zona NPN primero</td></tr>
+      <tr><td>5</td><td>BC337 NPN A — col 25, rows 12–14</td><td>Transistor después de sus resistencias</td></tr>
+      <tr><td>6</td><td>Resistencias NPN B — (23–24, 17) y (26–27, 17)</td><td>Ídem NPN A</td></tr>
+      <tr><td>7</td><td>BC337 NPN B — col 25, rows 16–18</td><td>Ídem NPN A</td></tr>
+      <tr><td>8</td><td>Step-up — 4 pines (cols 1 y 14, rows 14–15)</td><td>Antes de conectar la alimentación al ESP32</td></tr>
+      <tr><td style="color:var(--c-gnd)">✔</td><td style="color:var(--c-gnd)">VERIFICAR cortocircuito GND↔3V3 con multímetro</td><td style="color:var(--c-gnd)">No insertar módulos hasta confirmar</td></tr>
+      <tr><td>9</td><td>Headers hembra INA219 #1 — col 9, rows 3–8</td><td>Headers antes de los cables de señal</td></tr>
+      <tr><td>10</td><td>Headers hembra INA219 #2 — col 18, rows 3–8</td><td>Ídem</td></tr>
+      <tr><td>11</td><td>Headers hembra ESP32 — col 15 y col 21, rows 11–18</td><td>Verificar alineación con módulo real antes de soldar</td></tr>
+      <tr><td>12</td><td>Header inter-board macho 1×12 — fila 26, cols 10–21</td><td>Borde de placa, último para no estorbar</td></tr>
+      <tr><td>13</td><td>Cables de señal entre zonas</td><td>Con todos los headers fijos los destinos son definitivos</td></tr>
+      <tr><td>14</td><td>Insertar módulos (INA219s y ESP32)</td><td>Solo después de verificar continuidad con multímetro</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const COLS=31,ROWS=26,CS=17,ML=34,MT=26,HR=3;
+const sw=COLS*CS+ML+18, sh=ROWS*CS+MT+18;
+const pcb=document.getElementById('pcb');
+pcb.setAttribute('width',sw);
+pcb.setAttribute('height',sh);
+pcb.setAttribute('viewBox',`0 0 ${sw} ${sh}`);
+
+function ns(tag,a,p){
+  const e=document.createElementNS('http://www.w3.org/2000/svg',tag);
+  for(const[k,v] of Object.entries(a)) e.setAttribute(k,v);
+  (p||pcb).appendChild(e); return e;
+}
+function cx(c){return ML+(c-1)*CS+CS/2;}
+function cy(r){return MT+(r-1)*CS+CS/2;}
+function rx(c){return ML+(c-1)*CS;}
+function ry(r){return MT+(r-1)*CS;}
+function lbl(t,x,y,fs,fill,anchor='middle'){
+  const e=ns('text',{x,y,'text-anchor':anchor,'dominant-baseline':'middle',
+    'font-family':'Share Tech Mono,monospace','font-size':fs,fill});
+  e.textContent=t; return e;
+}
+
+// PCB background
+ns('rect',{x:0,y:0,width:sw,height:sh,fill:'#091509'});
+ns('rect',{x:ML,y:MT,width:COLS*CS,height:ROWS*CS,fill:'#132813',rx:3});
+
+// subtle grid lines
+for(let c=1;c<=COLS;c++){
+  ns('line',{x1:cx(c),y1:MT,x2:cx(c),y2:MT+ROWS*CS,stroke:'#1a401a','stroke-width':0.4,opacity:0.5});
+}
+for(let r=1;r<=ROWS;r++){
+  ns('line',{x1:ML,y1:cy(r),x2:ML+COLS*CS,y2:cy(r),stroke:'#1a401a','stroke-width':0.4,opacity:0.5});
+}
+
+// Component zones
+const zones=[
+  {c1:1,r1:1,c2:9,r2:10,fill:'#2979ff',op:0.18,l1:'INA219 #1',l2:'Solar 0x40'},
+  {c1:10,r1:1,c2:18,r2:10,fill:'#2979ff',op:0.18,l1:'INA219 #2',l2:'System 0x41'},
+  {c1:19,r1:1,c2:31,r2:10,fill:'#ffffff',op:0.03,l1:'libre',l2:'wiring'},
+  {c1:1,r1:11,c2:14,r2:18,fill:'#ff6d00',op:0.18,l1:'STEP-UP',l2:'BOOST 5V'},
+  {c1:15,r1:11,c2:21,r2:18,fill:'#ffd740',op:0.22,l1:'ESP32-C3',l2:'SuperMini'},
+  {c1:22,r1:11,c2:31,r2:21,fill:'#ffffff',op:0.03,l1:'libre',l2:'wiring'},
+  {c1:23,r1:12,c2:27,r2:14,fill:'#ff3d00',op:0.35,l1:'NPN A',l2:'Rail A'},
+  {c1:23,r1:16,c2:27,r2:18,fill:'#ff3d00',op:0.35,l1:'NPN B',l2:'Rail B'},
+  {c1:28,r1:22,c2:29,r2:25,fill:'#f50057',op:0.4,l1:'PU',l2:''},
+];
+
+for(const z of zones){
+  const zx=rx(z.c1),zy=ry(z.r1),zw=(z.c2-z.c1+1)*CS,zh=(z.r2-z.r1+1)*CS;
+  ns('rect',{x:zx,y:zy,width:zw,height:zh,fill:z.fill,opacity:z.op,rx:2});
+  ns('rect',{x:zx,y:zy,width:zw,height:zh,fill:'none',stroke:z.fill,
+    'stroke-width':0.8,opacity:z.op*2.5,rx:2});
+  const lcx=zx+zw/2, lcy=zy+zh/2;
+  if(zw>30 && zh>20){
+    lbl(z.l1,lcx,lcy-5,7,'#ffffff').style.opacity='0.75';
+    if(z.l2) lbl(z.l2,lcx,lcy+5,6,'#ffffff').style.opacity='0.5';
+  }
+}
+
+// Bus bands
+const buses=[
+  {r:22,color:'#00e5ff',lbl:'SCL'},
+  {r:23,color:'#76ff03',lbl:'SDA'},
+  {r:24,color:'#ff1744',lbl:'GND'},
+  {r:25,color:'#ffab40',lbl:'3V3'},
+];
+for(const b of buses){
+  ns('rect',{x:ML,y:ry(b.r),width:COLS*CS,height:CS,fill:b.color,opacity:0.12});
+  ns('line',{x1:ML,y1:cy(b.r),x2:ML+COLS*CS,y2:cy(b.r),
+    stroke:b.color,'stroke-width':1.5,opacity:0.55});
+  lbl(b.lbl,ML-16,cy(b.r),7,b.color);
+}
+
+// Inter-board header zone
+ns('rect',{x:rx(10),y:ry(26),width:12*CS,height:CS,fill:'#d500f9',opacity:0.25,rx:2});
+ns('rect',{x:rx(10),y:ry(26),width:12*CS,height:CS,fill:'none',
+  stroke:'#d500f9','stroke-width':1,opacity:0.5,rx:2});
+lbl('HEADER 1×12 INTER-BOARD',cx(10)+12*CS/2-CS/2,cy(26),6.5,'#d500f9');
+
+// All holes
+for(let c=1;c<=COLS;c++){
+  for(let r=1;r<=ROWS;r++){
+    ns('circle',{cx:cx(c),cy:cy(r),r:HR,fill:'#040e04',stroke:'#2a5a2a','stroke-width':0.7});
+  }
+}
+
+// Key pins — INA219 #1 header col 9, rows 3-8
+const ina1pins=['VCC','GND','SCL','SDA','VIN-','VIN+'];
+const ina1cols=['#ffab40','#ff1744','#00e5ff','#76ff03','#aaa','#aaa'];
+for(let i=0;i<6;i++){
+  ns('circle',{cx:cx(9),cy:cy(3+i),r:HR+2,fill:ina1cols[i],opacity:0.85});
+}
+
+// INA219 #2 header col 18, rows 3-8
+for(let i=0;i<6;i++){
+  ns('circle',{cx:cx(18),cy:cy(3+i),r:HR+2,fill:ina1cols[i],opacity:0.85});
+}
+
+// ESP32 headers col 15 + col 21, rows 11-18
+const esp32l=['5V','GND','3V3','IO4','IO3','IO2','IO1','IO0'];
+const esp32r=['IO5\nSCL','IO6\nSDA','IO7','IO8','IO9','IO10','IO20','IO21'];
+const esp32lc=['#fff','#ff1744','#ffab40','#b9f6ca','#b9f6ca','#b9f6ca','#888','#888'];
+const esp32rc=['#00e5ff','#76ff03','#ff8a65','#ffd740','#888','#888','#888','#888'];
+for(let i=0;i<8;i++){
+  ns('circle',{cx:cx(15),cy:cy(11+i),r:HR+2,fill:esp32lc[i],opacity:0.85});
+  ns('circle',{cx:cx(21),cy:cy(11+i),r:HR+2,fill:esp32rc[i],opacity:0.85});
+}
+
+// Step-up pins
+[[1,14,'#ff6d00'],[1,15,'#ff1744'],[14,14,'#ff6d00'],[14,15,'#ff1744']].forEach(([c,r,f])=>{
+  ns('circle',{cx:cx(c),cy:cy(r),r:HR+2,fill:f,opacity:0.85});
+});
+
+// NPN A — BC337 col 25 rows 12-14 + resistors
+[[25,12,'#ff5252'],[25,13,'#ff5252'],[25,14,'#ff5252'],
+ [23,13,'#ff8a65'],[24,13,'#ff8a65'],[26,13,'#ff8a65'],[27,13,'#ff8a65']].forEach(([c,r,f])=>{
+  ns('circle',{cx:cx(c),cy:cy(r),r:HR+1.8,fill:f,opacity:0.9});
+});
+
+// NPN B — BC337 col 25 rows 16-18 + resistors
+[[25,16,'#ff5252'],[25,17,'#ff5252'],[25,18,'#ff5252'],
+ [23,17,'#ff8a65'],[24,17,'#ff8a65'],[26,17,'#ff8a65'],[27,17,'#ff8a65']].forEach(([c,r,f])=>{
+  ns('circle',{cx:cx(c),cy:cy(r),r:HR+1.8,fill:f,opacity:0.9});
+});
+
+// Pull-up resistors
+[[28,22],[28,25],[29,23],[29,25]].forEach(([c,r])=>{
+  ns('circle',{cx:cx(c),cy:cy(r),r:HR+2,fill:'#f50057',opacity:0.9});
+});
+// Pull-up lines
+ns('line',{x1:cx(28),y1:cy(22),x2:cx(28),y2:cy(25),stroke:'#f50057','stroke-width':1,opacity:0.5,'stroke-dasharray':'2,2'});
+ns('line',{x1:cx(29),y1:cy(23),x2:cx(29),y2:cy(25),stroke:'#f50057','stroke-width':1,opacity:0.5,'stroke-dasharray':'2,2'});
+
+// Inter-board header pins
+for(let c=10;c<=21;c++){
+  ns('circle',{cx:cx(c),cy:cy(26),r:HR+2.5,fill:'#d500f9',opacity:0.8});
+}
+
+// Column numbers top
+for(let c=1;c<=COLS;c++){
+  const small = c%5===0 || c===1 || c===31;
+  lbl(String(c),cx(c),MT-8,small?8:6,small?'#5a9a5a':'#3a6a3a');
+}
+
+// Row numbers left
+for(let r=1;r<=ROWS;r++){
+  lbl(String(r),ML-14,cy(r),r%5===0||r===1||r===26?8:6,
+    r%5===0||r===1||r===26?'#5a9a5a':'#3a6a3a');
+}
+
+// Highlight key connections with dashed wires
+const wires=[
+  {x1:cx(21),y1:cy(11),x2:cx(21),y2:cy(22),color:'#00e5ff'},  // GPIO5/SCL → bus SCL
+  {x1:cx(21),y1:cy(12),x2:cx(21),y2:cy(23),color:'#76ff03'},  // GPIO6/SDA → bus SDA
+  {x1:cx(14),y1:cy(14),x2:cx(15),y2:cy(11),color:'#ff6d00'},  // step-up VOUT → ESP32 5V
+];
+for(const w of wires){
+  ns('line',{x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2,
+    stroke:w.color,'stroke-width':0.8,opacity:0.35,'stroke-dasharray':'2,3'});
+}
+
+// Legend
+const legendData=[
+  {color:'#2979ff',label:'INA219'},
+  {color:'#ff6d00',label:'Step-up'},
+  {color:'#ffd740',label:'ESP32-C3'},
+  {color:'#ff5252',label:'BC337 NPN'},
+  {color:'#ff8a65',label:'Resistencias'},
+  {color:'#d500f9',label:'Header inter-board'},
+  {color:'#f50057',label:'Pull-ups I²C'},
+  {color:'#00e5ff',label:'Bus SCL'},
+  {color:'#76ff03',label:'Bus SDA'},
+  {color:'#ff1744',label:'Bus GND'},
+  {color:'#ffab40',label:'Bus 3V3'},
+];
+
+const leg=document.getElementById('legend');
+for(const d of legendData){
+  const div=document.createElement('div');
+  div.className='li';
+  div.innerHTML=`<div class="ld" style="background:${d.color};opacity:0.8"></div><span>${d.label}</span>`;
+  leg.appendChild(div);
+}
+</script>
+</body>
+</html>

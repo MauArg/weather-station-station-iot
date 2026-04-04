@@ -2,6 +2,8 @@
 
 Stack de servicios que corre en la Raspberry Pi.
 
+Link al anemómetro impreso en 3D = https://makerworld.com/en/models/2052859-the-windicator-v1
+
 ## Setup inicial (primera vez)
 
 ### 1. Variables de entorno
