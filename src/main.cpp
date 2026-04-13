@@ -269,10 +269,21 @@ void publishTelemetry() {
     doc["solar_ok"]  = s.solar_ok;
     doc["system_ok"] = s.system_ok;
 
+    if (!isnan(s.ds18b20_c))     doc["ds18b20_c"]     = s.ds18b20_c;
+    if (!isnan(s.dht11_temp_c))  doc["dht11_temp_c"]  = s.dht11_temp_c;
+    if (!isnan(s.dht11_hum_pct)) doc["dht11_hum_pct"] = s.dht11_hum_pct;
+    if (!isnan(s.photo_kohm))    doc["photo_kohm"]    = s.photo_kohm;
+    if (!isnan(s.rain_pct))      doc["rain_pct"]      = s.rain_pct;
+
+    doc["ds18b20_ok"] = s.ds18b20_ok;
+    doc["dht11_ok"]   = s.dht11_ok;
+    doc["photo_ok"]   = s.photo_ok;
+    doc["rain_ok"]    = s.rain_ok;
+
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
 
-    char buf[512];
+    char buf[768];
     serializeJson(doc, buf);
     mqtt.publish(TOPIC_TELEMETRY, buf, false);
     mqtt.loop();
