@@ -145,9 +145,29 @@ SensorData sensors_read() {
     }
 
     // ── DHT11 ─────────────────────────────────────────────────────────────────
+    // El DHT11 falla intermitentemente por:
+    //   a) interferencia de las interrupciones WiFi durante el protocolo single-wire
+    //   b) el caché interno de la librería (MIN_INTERVAL=2s): un retry sin
+    //      force=true devuelve el mismo resultado fallido sin releer el sensor.
+    // Solución: hasta 2 intentos con force=true y 1 s entre ellos (mínimo
+    // de sampleo del DHT11 según datasheet).
     {
+        uint32_t t0 = millis();
         float t = _dht.readTemperature();
         float h = _dht.readHumidity();
+
+        if (isnan(t) || isnan(h)) {
+            // Retry: el DHT11 necesita 1 s entre lecturas (requerimiento de hardware).
+            // Esperamos solo el tiempo que falta desde el primer intento, de modo que
+            // si el programa ya tardó ese segundo (WiFi lento, modo realtime, etc.)
+            // el delay resultante sea cero. Se usa force=true para saltear el caché
+            // interno de la librería, que de lo contrario devolvería el mismo NAN.
+            uint32_t elapsed = millis() - t0;
+            if (elapsed < 1000) delay(1000 - elapsed);
+            t = _dht.readTemperature(false, true);
+            h = _dht.readHumidity(true);
+        }
+
         if (!isnan(t) && !isnan(h)) {
             d.dht11_temp_c = t;
             // Calibración lineal medida en caja estanca
