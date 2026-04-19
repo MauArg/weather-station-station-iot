@@ -79,7 +79,7 @@
 
 // ─── Pines nuevos sensores ────────────────────────────────────────────────────
 #define PIN_DS18B20         10  // OneWire temperatura exterior (always-on)
-#define PIN_DHT11            0  // DHT11 data, pull-up en módulo (Rail B)
+// #define PIN_DHT11            0  // DHT11 desactivado — sensor defectuoso
 #define PIN_PHOTORESISTOR    3  // ADC fotorresistencia (Rail B)
 #define PIN_RAIN_SENSOR      4  // ADC sensor de lluvia AO (Rail B)
 #define PIN_ANEMOMETER       2  // Pulso FALLING — anemómetro (always-on)
@@ -101,12 +101,9 @@
 #define ADC_VREF            3.3f
 #define ADC_MAX_RAW      4095.0f
 
-// DHT11 — calibración humedad (medida en caja estanca)
-//   hum_cal = clamp((raw-RAW_LO)/(RAW_HI-RAW_LO)*(REAL_HI-REAL_LO)+REAL_LO, 0, 100)
-//   Punto bajo:  raw 30%  → real 60% (humedad ambiente)
-//   Punto alto:  raw 83%  → real 100% (condensación máxima)
-#define DHT_HUM_RAW_LO      30.0f
-#define DHT_HUM_REAL_LO     60.0f
-#define DHT_HUM_RAW_HI      83.0f
-#define DHT_HUM_REAL_HI    100.0f
-#define DHT_WARMUP_MS       2000  // ms post-begin() para lecturas válidas
+// DHT11 — desactivado (sensor defectuoso)
+// #define DHT_HUM_RAW_LO      30.0f
+// #define DHT_HUM_REAL_LO     60.0f
+// #define DHT_HUM_RAW_HI      83.0f
+// #define DHT_HUM_REAL_HI    100.0f
+// #define DHT_WARMUP_MS       2000

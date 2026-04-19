@@ -22,9 +22,9 @@ struct SensorData {
     float ds18b20_c;           // DS18B20 — temperatura exterior (always-on)
     bool  ds18b20_ok;
 
-    float dht11_temp_c;        // DHT11 — temperatura (Rail B)
-    float dht11_hum_pct;       // DHT11 — humedad calibrada (Rail B)
-    bool  dht11_ok;
+    float dht11_temp_c;        // DHT11 — temperatura (Rail B)       [desactivado — sensor defectuoso]
+    float dht11_hum_pct;       // DHT11 — humedad calibrada (Rail B)  [desactivado]
+    bool  dht11_ok;            //                                       [desactivado]
 
     float photo_kohm;          // Fotorresistencia — resistencia estimada (Rail B)
     bool  photo_ok;
