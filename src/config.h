@@ -92,10 +92,9 @@
 //   R_foto = R_pullup * V / (3.3 - V)
 #define PHOTO_PULLUP_KOHM   10.0f
 
-// Rain sensor (calibrado sobre PCB auxiliar)
-//   V_dry=3.3V → 0%,  V_wet=2.3V → 100%
-#define RAIN_V_DRY          3.3f
-#define RAIN_V_WET          2.3f
+// Rain sensor: divisor 3V3 → R1‖R2(4.95kΩ) → señal → sensor → GND
+//   R_rain = R_pullup * V / (3.3 - V)
+#define RAIN_PULLUP_KOHM    4.95f
 
 // ADC
 #define ADC_VREF            3.3f

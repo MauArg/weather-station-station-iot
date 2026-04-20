@@ -189,15 +189,15 @@ SensorData sensors_read() {
     }
 
     // ── Rain sensor ADC ───────────────────────────────────────────────────────
-    // Circuito PCB: 3V3 → R1‖R2(4.95kΩ) → señal → C1(100nF) → GND
-    // Calibración: V_dry=3.3V → 0%, V_wet=2.3V → 100%
+    // Circuito PCB: 3V3 → R1‖R2(4.95kΩ) → señal → C1(100nF)‖sensor → GND
+    // R_rain = R_pullup * V / (3.3 - V)
     {
-        int   raw = analogRead(PIN_RAIN_SENSOR);
-        float v   = (raw / ADC_MAX_RAW) * ADC_VREF;
-        float pct = (RAIN_V_DRY - v) / (RAIN_V_DRY - RAIN_V_WET) * 100.0f;
-        if (pct < 0.0f)   pct = 0.0f;
-        if (pct > 100.0f) pct = 100.0f;
-        d.rain_pct = pct;
+        int   raw   = analogRead(PIN_RAIN_SENSOR);
+        float v     = (raw / ADC_MAX_RAW) * ADC_VREF;
+        float denom = ADC_VREF - v;
+        d.rain_kohm = (denom > 0.01f)
+                    ? (RAIN_PULLUP_KOHM * v / denom)
+                    : 9999.0f;   // sensor seco / desconectado
         d.rain_ok  = true;
     }
 

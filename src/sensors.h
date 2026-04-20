@@ -29,7 +29,7 @@ struct SensorData {
     float photo_kohm;          // Fotorresistencia — resistencia estimada (Rail B)
     bool  photo_ok;
 
-    float rain_pct;            // Rain sensor — humedad superficial 0–100% (Rail B)
+    float rain_kohm;           // Rain sensor — resistencia estimada en kΩ (Rail B)
     bool  rain_ok;
 
     // TODO [pulsos]: anemómetro (GPIO2) y pluviómetro (GPIO1) — datos diferidos
