@@ -76,6 +76,34 @@ bool sensors_init() {
 //  Lectura
 // =============================================================================
 
+// Excita el sensor de lluvia con un pulso corto en lugar de tensión continua
+// para minimizar corrosión electrolítica en los electrodos. GPIO4 actúa como
+// salida durante la excitación y luego como ADC para la lectura.
+// Rail B debe estar activo al llamar esta función.
+static int readRainSensorPulsed() {
+    const int DISCHARGE_MS  = 2;
+    const int EXCITATION_MS = 10;   // τ = 4.95kΩ × 100nF = 0.495ms → ×20
+    const int POST_MS       = 1;
+
+    pinMode(PIN_RAIN_SENSOR, OUTPUT);
+    digitalWrite(PIN_RAIN_SENSOR, LOW);
+    delay(DISCHARGE_MS);
+
+    digitalWrite(PIN_RAIN_SENSOR, HIGH);
+    delay(EXCITATION_MS);
+
+    pinMode(PIN_RAIN_SENSOR, INPUT);
+    delayMicroseconds(100);
+    int value = (analogRead(PIN_RAIN_SENSOR) + analogRead(PIN_RAIN_SENSOR)) / 2;
+
+    pinMode(PIN_RAIN_SENSOR, OUTPUT);
+    digitalWrite(PIN_RAIN_SENSOR, LOW);
+    delay(POST_MS);
+
+    pinMode(PIN_RAIN_SENSOR, INPUT);
+    return value;
+}
+
 SensorData sensors_read() {
     SensorData d;
 
@@ -192,7 +220,7 @@ SensorData sensors_read() {
     // Circuito PCB: 3V3 → R1‖R2(4.95kΩ) → señal → C1(100nF)‖sensor → GND
     // R_rain = R_pullup * V / (3.3 - V)
     {
-        int   raw   = analogRead(PIN_RAIN_SENSOR);
+        int   raw   = readRainSensorPulsed();
         float v     = (raw / ADC_MAX_RAW) * ADC_VREF;
         float denom = ADC_VREF - v;
         d.rain_kohm = (denom > 0.01f)
