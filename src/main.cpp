@@ -280,6 +280,7 @@ void publishTelemetry() {
     doc["photo_ok"]   = s.photo_ok;
     doc["rain_ok"]    = s.rain_ok;
 
+    doc["rssi_dbm"]   = (int)WiFi.RSSI();
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
 
