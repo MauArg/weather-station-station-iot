@@ -8,6 +8,37 @@
 
 &#x20;
 
+\## Estado actual en campo (actualizado 2026-07-11)
+
+&#x20;
+
+Sistema desplegado y funcionando al aire libre, en el fondo del terreno (lote angosto 12×35m, casa al extremo sur, frente de calle al norte), a la altura especificada para mediciones meteorológicas estándar. Ubicación GPS exacta no documentada todavía en ningún archivo del proyecto.
+
+&#x20;
+
+\*\*Sensores activos:\*\*
+\- SHT31-D + BMP180 — en los platos exteriores de la Stevenson screen ✅
+\- Rain sensor — montado justo arriba de la caja estanca, con leve inclinación ✅
+\- Fotoresistor — dentro de la caja estanca, mirando por una ventanita cortada en la caja para tomar luminosidad ✅
+\- DS18B20 (temp\_sistema) — mide temperatura de la caja estanca. ⚠️ falla intermitente (ver abajo)
+\- INA219 sistema + INA219 solar + módulo MPPT CN3791 — todos dentro de la caja estanca, cargando la batería. ⚠️ INA solar falla intermitente (ver abajo)
+
+&#x20;
+
+\*\*Removido / no instalado:\*\*
+\- DHT11 — removido del sistema, nunca leyó bien los valores. Se compró un DHT22 de reemplazo pero todavía no está conectado.
+\- AS5600 (veleta) — nunca se conectó. JST5 sigue sin nada conectado. No se empezaron las pruebas de veleta ni anemómetro en campo (el diseño/calibración de "The Windicator V1" existe en papel, pendiente de instalación física).
+
+&#x20;
+
+\*\*Sobre el issue de I2C (ver también `../i2c-bus-lockup-investigation.md`):\*\* la causa real no fue el AS5600 (nunca estuvo conectado) sino cold solder joints en las dos perfboards del primer prototipo. Resoldar varias juntas mejoró muchísimo el problema — antes era mucho más crítico (bus I2C se caía random, afectaba INA y más sensores). Ahora solo fallan intermitentemente el INA219 solar y el DS18B20, probablemente por juntas frías remanentes sin resoldar todavía.
+
+&#x20;
+
+\---
+
+&#x20;
+
 \## Hardware principal
 
 &#x20;
@@ -52,7 +83,7 @@
 
 |---|---|---|---|---|
 
-| GPIO0 | DHT11 DATA | Digital 1-wire | Rail B | — |
+| GPIO0 | DHT11 DATA | Digital 1-wire | Rail B | ⚠️ DHT11 removido del sistema — ver "Estado actual en campo" |
 
 | GPIO1 | Pluviómetro SIGNAL | Interrupt | Always-on | Reed switch, pull-up interno |
 
@@ -110,7 +141,7 @@
 
 | 0x77 | BMP180 | Plato exterior (via UTP) |
 
-| 0x36 | AS5600 veleta | Pendiente instalación |
+| 0x36 | AS5600 veleta | ⚠️ Nunca conectado — en duda, ver "Componentes pendientes de instalación" (posible alternativa óptica) |
 
 &#x20;
 
@@ -450,13 +481,17 @@ Hembra en placa auxiliar (fila 1, cols 7–18).
 
 |---|---|---|
 
-| AS5600 veleta | Por comprar | Módulo breakout I2C 0x36, 5 pines usados (VCC·GND·SCL·SDA·DIR) |
+| DHT22 | Comprado, sin conectar | Reemplazo del DHT11 (removido, nunca leyó bien) |
+
+| AS5600 veleta | ⚠️ En duda | Requiere imán diametral (N/S en caras opuestas) — los imanes disponibles son axiales (polos en caras planas), confirmado incompatible por prueba física. Imán diametral ~6mm N45 difícil de conseguir en Argentina (MercadoLibre/local) |
+
+| Alternativa preferida: disco óptico Gray code | En sourcing | 3× sensores IR reflectivos TCRT5000 (kit Sunfounder "Tracking Sensor") dan posición absoluta (8 posiciones, resolución 45°) al despertar de deep sleep — resuelve la limitación de posición relativa del AS5600. Mau tiene 1 sensor, necesita 2 más (más fácil de conseguir localmente que el imán diametral) |
+
+| PCF8574 (I2C GPIO expander) | Por comprar | 0x20, sin conflicto de bus — necesario para leer los 3× TCRT5000 (P0–P2) si se va por la vía óptica. GPIO20 controlaría LED\_EN vía BC337 |
 
 | 608ZZ bearings | Por comprar | Para anemómetro y veleta |
 
-| Imán diametral grande | Por comprar | Para veleta AS5600 — necesita imán diametral específico para lectura angular |
-
-| Chasis anemómetro+veleta | ✅ Impreso en PLA | STL "Weather Station One" (Printables/MakerWorld). Pendiente armado mecánico |
+| Chasis anemómetro+veleta | ✅ Impreso en PLA | STL "Weather Station One" (Printables/MakerWorld, modelo "The Windicator V1"). Pendiente armado mecánico y prueba en campo — todavía no se empezó |
 
 &#x20;
 

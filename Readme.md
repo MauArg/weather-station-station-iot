@@ -77,10 +77,25 @@ pio run -e ota_upload -t upload
 
 ---
 
-## Próximos servicios
+## Pipeline completo de datos (actualizado 2026-07-11)
 
-En `docker-compose.yml` están comentados los bloques de **InfluxDB** y **N8N**.
-Cuando corresponda, descomentar, agregar las variables en `.env` y:
-```bash
-docker compose up -d
+Los bloques de **InfluxDB** y **N8N** en `docker-compose.yml` están comentados porque esos servicios **ya están corriendo, pero no acá** — no en la Raspberry Pi de la estación, sino repartidos así:
+
 ```
+ESP32 ──MQTT──▶ Mosquitto (Docker, esta RPi)
+                      │
+                      ▼
+                 N8N (host de esta RPi, NO en Docker)
+                 MQTT Trigger → Code (Line Protocol) → HTTP Request
+                      │
+                      ▼
+              InfluxDB v2 (Docker, NAS 192.168.18.251)
+                      │
+                      ▼
+                Grafana (Docker, NAS 192.168.18.251, puerto 3000)
+```
+
+- **NAS (192.168.18.251)**: InfluxDB v2 (imagen fijada a `influxdb:2` — **nunca** `influxdb:latest`, la v3 Core tiene ventana de consulta de 72h, inutilizable para histórico meteorológico) y Grafana, ambos en Docker sobre una red interna `iot-net`, con datos persistidos en `/mnt/disco/influxdb` y `/mnt/disco/grafana`. Hay un override de systemd (drop-in) que hace que Docker espere a que el mount NFS esté listo antes de arrancar — sin eso, los contenedores fallan en boot si el NFS tarda en montar.
+- **N8N** corre directo en el host de esta Raspberry Pi (no dockerizado), no en el `docker-compose.yml` de este repo.
+
+⚠️ Los `docker-compose.yml` / configuración del lado del NAS (InfluxDB, Grafana) todavía no están versionados en ningún repo de este proyecto — viven solo en el NAS. Pendiente de incorporar a git si se quiere que el NAS también sea reproducible desde acá.
