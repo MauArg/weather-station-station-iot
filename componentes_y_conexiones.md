@@ -39,6 +39,26 @@ Sistema desplegado y funcionando al aire libre, en el fondo del terreno (lote an
 
 &#x20;
 
+\## PCB v2 — en fabricación (actualizado 2026-07-11)
+
+&#x20;
+
+Versión definitiva en desarrollo para reemplazar el prototipo de dos perfboards de arriba y resolver el problema de cold solder joints. **Corresponde a los layouts documentados en este archivo** (secciones "Placa principal — 31×26 holes" y "Placa auxiliar JST — 24×10 holes" más abajo) — diseñados en Fritzing (`Main PCB - ... IoT_v1.4.fzz`, `Aux PCB - ... IoT_v1.2.2.fzz`, raíz de este repo) y fabricados como PCB FR4 simple faz caseras, por transferencia de tóner + cloruro férrico. Los exports de fabricación (capas etch/mask/silk, por intento) están en `PCB/`.
+
+&#x20;
+
+\*\*Estado del armado:\*\* ambas placas (main + aux) perforadas, soldadura de componentes en curso — no terminada todavía.
+
+&#x20;
+
+\*\*Plan de protección contra humedad/estrés térmico\*\* (antes de instalar los módulos enchufables): terminar de soldar todos los componentes → limpiar residuos de flux con alcohol isopropílico → enmascarar con cinta los headers hembra donde van INA219/ESP32 (para que el barniz no llegue a los contactos) → aplicar Flux Protector (ContactFlux) y barniz dielectrico (Delta) sobre toda la placa ya soldada → dejar curar → recién ahí insertar los módulos en los headers.
+
+&#x20;
+
+\---
+
+&#x20;
+
 \## Hardware principal
 
 &#x20;
