@@ -173,7 +173,37 @@ Versión definitiva en desarrollo para reemplazar el prototipo de dos perfboards
 
 &#x20;
 
-Dos transistores BC337 (hFE 250 y 263, pinout C-B-E con plano al frente) controlan el GND de los sensores.
+Dos transistores BC337 (pinout C-B-E con plano al frente) controlan el GND de los sensores. hFE medido: 250 y 263 en las unidades del prototipo perfboard; 226 en la unidad montada en la PCB Main v1.4. El rango de spec del BC337-25 es 160–400 y el valor depende de la corriente de test del tester — cualquier valor de ese orden está sobrado (se necesita hFE ≥ 4).
+
+&#x20;
+
+\### ⚠️ Orientación física — footprint de Fritzing con serigrafía inconsistente
+
+&#x20;
+
+**El footprint de transistor bipolar de Fritzing (TO92 THT, tipo "NPN (CBE)") tiene la D de la serigrafía dibujada de forma inconsistente con el orden C-B-E de los pads.** Un BC337 real insertado siguiendo la panza de la serigrafía queda con **colector y emisor cruzados**.
+
+&#x20;
+
+En la Main v1.4 esto pasó con Q1 RAIL1 y Q2 RAIL2 — ambos quedaron invertidos. Detectado midiendo continuidad en la placa armada (emisor al bus, colector a tierra). Corregido desoldando y rotando los dos transistores 180° sobre su eje vertical (la base queda en el mismo agujero, las patas externas intercambian lugar).
+
+&#x20;
+
+**Regla de armado:** insertar el BC337 con la parte plana **al revés de lo que marca la serigrafía**.
+
+&#x20;
+
+Notas de diagnóstico, por si reaparece:
+
+&#x20;
+
+\- El cobre y el esquemático de Fritzing **son correctos** — verificado por continuidad (GND, VCC, SDA, SCL, e inter-board contra la aux) y por el esquemático (emisor→tierra). El error es solo del silkscreen del footprint.
+
+\- Cambiar el dropdown de tipo a "NPN (EBC)" **no sirve como fix**: Fritzing intenta invertir las pistas del PCB, porque el swap C/E está acoplado entre esquemático y PCB.
+
+\- Síntoma eléctrico si queda invertido: el transistor opera en modo activo inverso (hFE ~2–5 en vez de 226), con Vce(sat) degradado. El "GND" del rail no queda en 0V sino flotando algunos cientos de mV, de forma variable — referencia sucia para los sensores I2C.
+
+\- Verificación rápida con tester en modo diodo: punta roja en la pata del **centro** (base en ambas convenciones), negra en cada lateral. El que da la caída levemente **mayor** es el emisor, y va a GND del sistema.
 
 &#x20;
 
@@ -392,6 +422,10 @@ Se prescinde del módulo completo. Solo se usa la placa sensora conectada direct
 &#x20;
 
 \### Conectores JST
+
+&#x20;
+
+⚠️ **Orientación:** en la PCB v2 los JST habían quedado montados 180° invertidos respecto del prototipo perfboard v1. Se dieron vuelta todos y quedó correcto. Al armar una placa nueva, verificar la orientación del conector contra el pinout de esta tabla antes de soldar — el orden de pines de abajo asume la orientación ya corregida.
 
 &#x20;
 
