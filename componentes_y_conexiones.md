@@ -541,9 +541,9 @@ Hembra en placa auxiliar (fila 1, cols 7–18).
 
 | DHT22 | Instalado físicamente + firmware adaptado (2026-07-25), falta flashear | Reemplazo del DHT11 (murió, falla crónica). Transplante del sensor pelado al módulo Sunfounder original — ver "Estado actual en campo" |
 
-| AS5600 veleta | ⚠️ En duda | Requiere imán diametral (N/S en caras opuestas) — los imanes disponibles son axiales (polos en caras planas), confirmado incompatible por prueba física. Imán diametral ~6mm N45 difícil de conseguir en Argentina (MercadoLibre/local) |
+| AS5600 veleta | 🔄 En validación de banco (actualizado 2026-07-25) | Vuelve a ser candidato fuerte: el módulo vino con un imán chico no notado antes (corrige la conclusión previa de incompatibilidad). Conectores dupont ya soldados; prueba en banco con Arduino Mega en curso — primero a mano sin la veleta, después PoC con la veleta montada. Pendiente confirmar si el imán es diametral — ver `aprendizajes_y_roadmap.md` → "Dirección" |
 
-| Alternativa preferida: disco óptico Gray code | En sourcing | 3× sensores IR reflectivos TCRT5000 (kit Sunfounder "Tracking Sensor") dan posición absoluta (8 posiciones, resolución 45°) al despertar de deep sleep — resuelve la limitación de posición relativa del AS5600. Mau tiene 1 sensor, necesita 2 más (más fácil de conseguir localmente que el imán diametral) |
+| Alternativa (plan B): disco óptico Gray code | En sourcing | 3× sensores IR reflectivos TCRT5000 (kit Sunfounder "Tracking Sensor") dan posición absoluta (8 posiciones, resolución 45°) al despertar de deep sleep — resuelve la limitación de posición relativa del AS5600. Mau tiene 1 sensor, necesita 2 más. Queda como respaldo si el AS5600 no resuelve en banco |
 
 | PCF8574 (I2C GPIO expander) | Por comprar | 0x20, sin conflicto de bus — necesario para leer los 3× TCRT5000 (P0–P2) si se va por la vía óptica. GPIO20 controlaría LED\_EN vía BC337 |
 

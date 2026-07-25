@@ -15,10 +15,13 @@ Modelo base: [The Windicator V1](https://makerworld.com/en/models/2052859-the-wi
 - GPIO2, interrupt.
 - Diseño/calibración lista en papel — **pendiente armado mecánico y prueba en campo** (no se empezó todavía, ver `componentes_y_conexiones.md` → "Estado actual en campo").
 
-**Dirección — problema abierto:**
-El approach original con AS5600 (sensor de efecto Hall angular, I2C 0x36) requiere un imán **diametralmente magnetizado** (N/S en caras opuestas del disco). Los imanes disponibles son de magnetización **axial** (polos en las caras planas) — confirmado incompatible por prueba física. Conseguir un imán diametral ~6mm N45 en Argentina (MercadoLibre, local) está resultando difícil. Un imán anillo con diámetro interior >8.25mm también es difícil de conseguir localmente.
+**Dirección — AS5600 vuelve a ser candidato fuerte (actualizado 2026-07-25):**
+La conclusión previa (imanes disponibles son axiales, incompatibles con el AS5600) queda corregida: el módulo AS5600 vino con un imán chico que no se había notado antes. Mau ya soldó los conectores dupont del módulo para probarlo en banco con un Arduino Mega — primero "a mano" (rotando el imán frente al sensor sin la veleta montada, mirando magnet-detected/AGC/magnitude por I2C) y después una prueba de concepto con la veleta montada. Todavía no está confirmado si ese imán es diametral o si el AS5600 tolera algo distinto de lo asumido originalmente — eso es justo lo que la prueba de banco va a determinar, no asumir el resultado.
 
-**Alternativa preferida — disco óptico Gray code:**
+Contexto original del problema, vigente como fallback si la prueba de banco no lo resuelve:
+El approach con AS5600 (sensor de efecto Hall angular, I2C 0x36) requiere un imán **diametralmente magnetizado** (N/S en caras opuestas del disco). La conclusión anterior era que solo había imanes de magnetización **axial** disponibles (polos en las caras planas), y que conseguir uno diametral ~6mm N45 en Argentina (MercadoLibre, local) resultaba difícil. Un imán anillo con diámetro interior >8.25mm también es difícil de conseguir localmente.
+
+**Alternativa (plan B si el AS5600 no resuelve en banco) — disco óptico Gray code:**
 3× sensores IR reflectivos TCRT5000 (del kit Sunfounder "Tracking Sensor") sobre un disco con patrón Gray code. Da posición **absoluta** (8 posiciones, resolución 45°) inmediatamente al despertar de deep sleep — resuelve la limitación de posición relativa del AS5600 (que necesitaría recalibrar en cada wake). Operación pulsada (2ms cada 10s, duty cycle 0.02%) reduce el consumo promedio a ~0.018mA.
 
 - GPIO expander PCF8574 (I2C 0x20, sin conflicto de bus) lee las 3 líneas digitales (P0–P2).
@@ -58,7 +61,7 @@ Reconciliado con el estado real al 2026-07-11 (el snapshot original venía del p
 - 🔄 **PCB v2 (FR4 casera, transferencia de tóner + cloruro férrico)** — en fabricación. Main + Aux perforadas, soldadura en curso. Pendiente: terminar de soldar, limpiar flux, enmascarar headers hembra, aplicar flux protector + barniz dielectrico, curar, recién ahí instalar módulos enchufables (INA219, ESP32). Ver `componentes_y_conexiones.md` → "PCB v2 — en fabricación".
 - ✅ **Perforación de la caja estanca** (ventana PET para fotoresistor, prensaestopas) — hecha, sistema desplegado y operativo.
 - ✅ **Backend + frontend custom** — hecho: `weather-station-backend-service` (Go) y `weather-station-frontend-dashboard` (React/Vite), ya no es "un amigo capaz hace el frontend" como decía el snapshot original.
-- ⏳ **Resolución de dirección de viento** — sigue abierto: conseguir imán diametral (AS5600) o 2 sensores TCRT5000 más (vía óptica, preferida actualmente).
+- ⏳ **Resolución de dirección de viento** — AS5600 vuelve a ser candidato fuerte (imán chico encontrado en el módulo, no notado antes); en validación de banco con Arduino Mega desde 2026-07-25. Óptica (2 sensores TCRT5000 más) sigue como plan B.
 - ⏳ **Armado mecánico del Windicator** (anemómetro + veleta) — impreso en PLA, pendiente de armar y probar en campo.
 - ❓ **Montaje del panel solar** (placa de respaldo policarbonato/fenólico, sellado con silicona, bracket a 45°) — estado sin confirmar en esta sesión; el sistema ya reporta datos solares (INA219 solar) así que probablemente esté al menos parcialmente instalado.
 - ❓ **Mejora del Stevenson screen** (protección lateral contra sol, ventilación forzada) — estado sin confirmar. Se sabe que el wrap de aluminio en el mástil redujo contaminación térmica (2.04°C de mejora confirmada por análisis de datos) pero generó un efecto espejo que refleja radiación hacia el BMP180.
