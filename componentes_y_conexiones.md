@@ -26,8 +26,12 @@ Sistema desplegado y funcionando al aire libre, en el fondo del terreno (lote an
 &#x20;
 
 \*\*Removido / no instalado:\*\*
-\- DHT11 — removido del sistema, nunca leyó bien los valores. Se compró un DHT22 de reemplazo pero todavía no está conectado.
 \- AS5600 (veleta) — nunca se conectó. JST5 sigue sin nada conectado. No se empezaron las pruebas de veleta ni anemómetro en campo (el diseño/calibración de "The Windicator V1" existe en papel, pendiente de instalación física).
+
+&#x20;
+
+\*\*Reemplazado, pendiente de firmware:\*\*
+\- DHT11 → DHT22 — el DHT11 murió (falla crónica, venía fallando ya en proyectos anteriores a esta estación). \*\*2026-07-25:\*\* reemplazo físico completado — se desoldó el DHT11 del módulo Sunfounder y se soldó en su lugar el sensor DHT22 pelado, reutilizando el PCB del módulo (mismo pull-up y filtro ya incluidos ahí, mismo orden de pines VDD-DATA-NC-GND y mismo paso de 2.54mm que el DHT11, mismo conector JST y pin GPIO0 de la placa principal — sin cambios de cableado ni de PCB). Documentado con fotos antes/después del desoldado. Firmware todavía sin reactivar — el sensor no va a leer datos hasta actualizar `sensors.cpp`/`config.h` (detalle en `../STATUS.md`).
 
 &#x20;
 
@@ -103,7 +107,7 @@ Versión definitiva en desarrollo para reemplazar el prototipo de dos perfboards
 
 |---|---|---|---|---|
 
-| GPIO0 | DHT11 DATA | Digital 1-wire | Rail B | ⚠️ DHT11 removido del sistema — ver "Estado actual en campo" |
+| GPIO0 | DHT22 DATA (ex DHT11) | Digital 1-wire | Rail B | Sensor reemplazado físicamente 2026-07-25, firmware pendiente — ver "Estado actual en campo" |
 
 | GPIO1 | Pluviómetro SIGNAL | Interrupt | Always-on | Reed switch, pull-up interno |
 
@@ -535,7 +539,7 @@ Hembra en placa auxiliar (fila 1, cols 7–18).
 
 |---|---|---|
 
-| DHT22 | Comprado, sin conectar | Reemplazo del DHT11 (removido, nunca leyó bien) |
+| DHT22 | Instalado físicamente (2026-07-25), firmware pendiente | Reemplazo del DHT11 (murió, falla crónica). Transplante del sensor pelado al módulo Sunfounder original — ver "Estado actual en campo" |
 
 | AS5600 veleta | ⚠️ En duda | Requiere imán diametral (N/S en caras opuestas) — los imanes disponibles son axiales (polos en caras planas), confirmado incompatible por prueba física. Imán diametral ~6mm N45 difícil de conseguir en Argentina (MercadoLibre/local) |
 
