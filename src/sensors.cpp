@@ -4,7 +4,7 @@
 #include <Adafruit_INA219.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-// #include <DHT.h>  // DHT11 desactivado — sensor defectuoso
+#include <DHT.h>
 
 #include "sensors.h"
 #include "config.h"
@@ -17,7 +17,7 @@ static Adafruit_INA219 ina219_system(INA219_SYSTEM_ADDR);
 
 static OneWire           _oneWire(PIN_DS18B20);
 static DallasTemperature _ds18b20(&_oneWire);
-// static DHT               _dht(PIN_DHT11, DHT11);  // DHT11 desactivado
+static DHT               _dht(PIN_DHT22, DHT22);
 
 // ─── Estado de inicialización ─────────────────────────────────────────────────
 static bool _sht31_ok   = false;
@@ -36,14 +36,15 @@ bool sensors_init() {
     //   según umbral de batería — ver battery.h
     pinMode(PIN_RAIL_A, OUTPUT); digitalWrite(PIN_RAIL_A, HIGH);
     pinMode(PIN_RAIL_B, OUTPUT); digitalWrite(PIN_RAIL_B, HIGH);
+    const uint32_t rail_on_ms = millis();   // referencia del warmup del DHT22
 
     // ── DS18B20 ───────────────────────────────────────────────────────────────
     _ds18b20.begin();
     _ds18b20.setResolution(9);   // ~93 ms conversión
     _ds18b20_ok = (_ds18b20.getDeviceCount() > 0);
 
-    // ── DHT11 ─────────────────────────────────────────────────────────────────
-    // _dht.begin();  // DHT11 desactivado — sensor defectuoso
+    // ── DHT22 ─────────────────────────────────────────────────────────────────
+    _dht.begin();
 
     // ── Sensores de pulso (always-on) — pines configurados, datos diferidos ───
     // TODO [pulsos]: implementar conteo acumulado en RTC memory
@@ -56,11 +57,16 @@ bool sensors_init() {
     _solar_ok  = ina219_solar.begin();
     _system_ok = ina219_system.begin();
 
-    // ── DHT11 warmup: desactivado — sensor defectuoso ─────────────────────────
-    // uint32_t elapsed = millis();
-    // if (elapsed < DHT_WARMUP_MS) {
-    //     delay(DHT_WARMUP_MS - elapsed);
-    // }
+    // ── DHT22 warmup ──────────────────────────────────────────────────────────
+    // Se mide desde que Rail B entrega energía, NO desde el boot: sensors_init()
+    // corre después de WiFi+MQTT (ver main.cpp), así que acá millis() ya vale
+    // 2-5s y anclarlo al boot dejaba el warmup efectivo en cero — el sensor se
+    // leía apenas energizado. Va al final del init para que el tiempo del bus
+    // I2C y del DS18B20 cuente como parte del warmup en vez de sumarse.
+    uint32_t elapsed = millis() - rail_on_ms;
+    if (elapsed < DHT_WARMUP_MS) {
+        delay(DHT_WARMUP_MS - elapsed);
+    }
 
     LOG_V("Rails A:HIGH B:HIGH | DS18B20:%s | SHT31:%s BMP:%s INA_sol:%s INA_sys:%s",
         _ds18b20_ok ? "OK" : "ERR",
@@ -170,38 +176,37 @@ SensorData sensors_read() {
         d.ds18b20_c = NAN;
     }
 
-    // ── DHT11 — desactivado (sensor defectuoso) ───────────────────────────────
-    // {
-    //     uint32_t t0 = millis();
-    //     float t = _dht.readTemperature();
-    //     float h = _dht.readHumidity();
-    //
-    //     if (isnan(t) || isnan(h)) {
-    //         uint32_t elapsed = millis() - t0;
-    //         if (elapsed < 1000) delay(1000 - elapsed);
-    //         t = _dht.readTemperature(false, true);
-    //         h = _dht.readHumidity(true);
-    //     }
-    //
-    //     if (!isnan(t) && !isnan(h)) {
-    //         d.dht11_temp_c = t;
-    //         float cal = (h - DHT_HUM_RAW_LO)
-    //                   / (DHT_HUM_RAW_HI - DHT_HUM_RAW_LO)
-    //                   * (DHT_HUM_REAL_HI - DHT_HUM_REAL_LO)
-    //                   + DHT_HUM_REAL_LO;
-    //         if (cal < 0.0f)   cal = 0.0f;
-    //         if (cal > 100.0f) cal = 100.0f;
-    //         d.dht11_hum_pct = cal;
-    //         d.dht11_ok      = true;
-    //     } else {
-    //         d.dht11_temp_c  = NAN;
-    //         d.dht11_hum_pct = NAN;
-    //         d.dht11_ok      = false;
-    //     }
-    // }
-    d.dht11_temp_c  = NAN;
-    d.dht11_hum_pct = NAN;
-    d.dht11_ok      = false;
+    // ── DHT22 (Rail B) ────────────────────────────────────────────────────────
+    // Los campos siguen llamándose dht11_* a propósito: son las claves del JSON
+    // de telemetría y renombrarlas partiría la serie histórica del InfluxDB del
+    // NAS. El sensor físico es un DHT22 desde 2026-07-25.
+    {
+        uint32_t t0 = millis();
+        float t = _dht.readTemperature();
+        float h = _dht.readHumidity();   // reusa la trama cacheada, no relee el bus
+
+        if (isnan(t) || isnan(h)) {
+            // Respetar el período mínimo de muestreo antes de forzar otra trama.
+            uint32_t elapsed = millis() - t0;
+            if (elapsed < DHT_RETRY_INTERVAL_MS) {
+                delay(DHT_RETRY_INTERVAL_MS - elapsed);
+            }
+            if (_dht.read(true)) {           // una sola trama forzada...
+                t = _dht.readTemperature();  // ...y ambos valores salen de ella
+                h = _dht.readHumidity();
+            }
+        }
+
+        if (!isnan(t) && !isnan(h)) {
+            d.dht11_temp_c  = t;   // DHT22: -40..+80 °C, resolución 0.1 (soporta bajo cero)
+            d.dht11_hum_pct = h;   // calibrado de fábrica — sin corrección empírica
+            d.dht11_ok      = true;
+        } else {
+            d.dht11_temp_c  = NAN;
+            d.dht11_hum_pct = NAN;
+            d.dht11_ok      = false;
+        }
+    }
 
     // ── Fotorresistencia ADC ──────────────────────────────────────────────────
     // Circuito: 3V3 → R10kΩ → señal → fotorresistencia → GND

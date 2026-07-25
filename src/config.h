@@ -73,13 +73,13 @@
 // ─── Rail control (transistores NPN BC337 en PCB principal) ───────────────────
 // GPIO HIGH → NPN conduce → GND del rail conectado → sensores alimentados
 #define PIN_RAIL_A          7   // Rail A: sensores exteriores (SHT31 + BMP085)
-#define PIN_RAIL_B          8   // Rail B: sensores enclosure (DHT11, foto, lluvia)
+#define PIN_RAIL_B          8   // Rail B: sensores enclosure (DHT22, foto, lluvia)
 // TODO [bajo consumo]: apagar Rail B en Tier 2 y Rail A en Tier 3
 //   según umbral de batería — implementar en battery.h
 
 // ─── Pines nuevos sensores ────────────────────────────────────────────────────
 #define PIN_DS18B20         10  // OneWire temperatura exterior (always-on)
-// #define PIN_DHT11            0  // DHT11 desactivado — sensor defectuoso
+#define PIN_DHT22            0  // DHT22 DATA (Rail B) — mismo pin que el ex DHT11
 #define PIN_PHOTORESISTOR    3  // ADC fotorresistencia (Rail B)
 #define PIN_RAIN_SENSOR      4  // ADC sensor de lluvia AO (Rail B)
 #define PIN_ANEMOMETER       2  // Pulso FALLING — anemómetro (always-on)
@@ -100,9 +100,16 @@
 #define ADC_VREF            3.3f
 #define ADC_MAX_RAW      4095.0f
 
-// DHT11 — desactivado (sensor defectuoso)
-// #define DHT_HUM_RAW_LO      30.0f
-// #define DHT_HUM_REAL_LO     60.0f
-// #define DHT_HUM_RAW_HI      83.0f
-// #define DHT_HUM_REAL_HI    100.0f
-// #define DHT_WARMUP_MS       2000
+// ─── DHT22 (Rail B) ───────────────────────────────────────────────────────────
+// Sin constantes de calibración de humedad: las que había (DHT_HUM_RAW/REAL_*)
+// corregían el sesgo del DHT11 defectuoso. El DHT22 viene calibrado de fábrica
+// (±2% RH, ±0.5 °C) — cualquier corrección acá volvería a sesgar la lectura.
+//
+// Warmup tras energizar Rail B. El datasheet del AM2302 pide ≥1s de "unstable
+// status"; 2s es margen conservador. Se mide desde el rail-on, no desde el boot
+// — ver sensors_init().
+#define DHT_WARMUP_MS           2000
+
+// Período mínimo de muestreo del DHT22 (datasheet: ≥2s entre lecturas).
+// Espaciado del reintento cuando la primera trama sale corrupta.
+#define DHT_RETRY_INTERVAL_MS   2000

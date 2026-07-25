@@ -22,9 +22,12 @@ struct SensorData {
     float ds18b20_c;           // DS18B20 — temperatura exterior (always-on)
     bool  ds18b20_ok;
 
-    float dht11_temp_c;        // DHT11 — temperatura (Rail B)       [desactivado — sensor defectuoso]
-    float dht11_hum_pct;       // DHT11 — humedad calibrada (Rail B)  [desactivado]
-    bool  dht11_ok;            //                                       [desactivado]
+    // Nombres históricos dht11_*: el sensor físico es un DHT22 desde 2026-07-25
+    // (mismo módulo, mismo pin). Se conservan porque son las claves del JSON de
+    // telemetría y renombrarlas partiría la serie histórica en InfluxDB.
+    float dht11_temp_c;        // DHT22 — temperatura (Rail B), -40..+80 °C
+    float dht11_hum_pct;       // DHT22 — humedad (Rail B), calibrada de fábrica
+    bool  dht11_ok;
 
     float photo_kohm;          // Fotorresistencia — resistencia estimada (Rail B)
     bool  photo_ok;

@@ -125,7 +125,11 @@ bool connectWiFi() {
 bool connectMQTT() {
     mqtt.setServer(MQTT_BROKER, MQTT_PORT);
     mqtt.setCallback(mqttCallback);
-    mqtt.setBufferSize(512);
+    // 512 quedaba corto: el payload de telemetría llega a ~546 B con temperaturas
+    // bajo cero (más dígitos) y los 3 campos del DHT22. PubSubClient descarta el
+    // publish entero y en silencio si no entra (buffer = header 5 + 2 + topic 20
+    // + payload). 768 deja margen para el subsistema de viento pendiente.
+    mqtt.setBufferSize(768);
 
     if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
         LOG_V("MQTT conectado");
@@ -270,13 +274,13 @@ void publishTelemetry() {
     doc["system_ok"] = s.system_ok;
 
     if (!isnan(s.ds18b20_c))     doc["ds18b20_c"]     = s.ds18b20_c;
-    // if (!isnan(s.dht11_temp_c))  doc["dht11_temp_c"]  = s.dht11_temp_c;   // DHT11 desactivado
-    // if (!isnan(s.dht11_hum_pct)) doc["dht11_hum_pct"] = s.dht11_hum_pct;  // DHT11 desactivado
+    if (!isnan(s.dht11_temp_c))  doc["dht11_temp_c"]  = s.dht11_temp_c;
+    if (!isnan(s.dht11_hum_pct)) doc["dht11_hum_pct"] = s.dht11_hum_pct;
     if (!isnan(s.photo_kohm))    doc["photo_kohm"]    = s.photo_kohm;
     if (!isnan(s.rain_kohm))     doc["rain_kohm"]     = s.rain_kohm;
 
     doc["ds18b20_ok"] = s.ds18b20_ok;
-    // doc["dht11_ok"]   = s.dht11_ok;  // DHT11 desactivado
+    doc["dht11_ok"]   = s.dht11_ok;
     doc["photo_ok"]   = s.photo_ok;
     doc["rain_ok"]    = s.rain_ok;
 
@@ -285,10 +289,14 @@ void publishTelemetry() {
     doc["boot_count"] = rtc_bootCount;
 
     char buf[768];
-    serializeJson(doc, buf);
-    mqtt.publish(TOPIC_TELEMETRY, buf, false);
+    size_t len = serializeJson(doc, buf);
+    if (!mqtt.publish(TOPIC_TELEMETRY, buf, false)) {
+        // Falla silenciosa si el payload excede el buffer — hacerla visible.
+        LOG_E("Publish de telemetría falló (%u B) — ¿buffer MQTT corto?", (unsigned)len);
+    } else {
+        LOG_V("Telemetría publicada (%u B)", (unsigned)len);
+    }
     mqtt.loop();
-    LOG_V("Telemetría publicada");
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
