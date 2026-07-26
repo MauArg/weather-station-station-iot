@@ -1,8 +1,10 @@
 #include "service_mode.h"
 #include "config.h"
+#include "sensors.h"        // monitor de batería durante la sesión
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <esp_ota_ops.h>    // para rollback
+#include <math.h>
 
 // ─── Variables RTC (definición) ───────────────────────────────────────────────
 RTC_DATA_ATTR bool     rtc_inServiceMode    = false;
@@ -18,6 +20,13 @@ static void _publishStatus(PubSubClient& mqtt, const char* state,
     doc["state"]     = state;
     if (remainingSec >= 0) doc["remaining_sec"] = remainingSec;
     if (extra)             doc["info"]          = extra;
+
+    // Voltaje de batería medido bajo carga de service mode: el nodo está despierto
+    // sin deep sleep que le permita recuperar tensión, así que este número es el
+    // relevante para decidir si conviene arrancar un flash. Se omite si el INA219
+    // no respondió, para no publicar un cero que se lea como batería agotada.
+    float vbat = sensors_readSystemVoltage();
+    if (!isnan(vbat)) doc["system_v"] = vbat;
 
     char buf[256];
     serializeJson(doc, buf);
@@ -117,6 +126,12 @@ void serviceMode_evaluate(PubSubClient& mqtt, const Command& cmd) {
 
 void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
     LOG_V("=== SERVICE MODE ACTIVO (max %d min) ===", timeoutMin);
+
+    // Solo el INA219 de sistema, sin encender rails — habilita el campo system_v
+    // de los heartbeats. Si falla, la sesión sigue igual: el campo se omite.
+    if (!sensors_initSystemMonitor()) {
+        LOG_E("INA219 de sistema no respondió — heartbeats sin voltaje");
+    }
 
     _publishStatus(mqtt, "service_mode_active", timeoutMin * 60);
     _setupOTA();

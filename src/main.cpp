@@ -220,6 +220,13 @@ void handleCommand(const Command& cmd) {
 
         case CommandType::REBOOT:
             LOG_V("Comando reboot recibido");
+            // Limpiar el retained ANTES de reiniciar. Sin esto el nodo vuelve a
+            // leer el mismo {"cmd":"reboot"} en el siguiente wake y reinicia otra
+            // vez, en loop, hasta agotar la batería — el comando queda retenido en
+            // el broker y nada lo borra. A diferencia de PING (que limpia, más
+            // abajo) y de MAINTENANCE (que limpia al salir de service mode),
+            // REBOOT no tenía salida.
+            mqtt.publish(TOPIC_CMD, "", true);
             mqtt.publish(TOPIC_STATUS, "{\"state\":\"rebooting\"}", false);
             mqtt.loop();
             delay(200);

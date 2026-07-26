@@ -27,6 +27,25 @@ static bool _system_ok  = false;
 static bool _ds18b20_ok = false;
 
 // =============================================================================
+//  Monitor de batería para service mode
+// =============================================================================
+// Ver sensors.h para el porqué: sensors_init() no corre en service mode, así que
+// sin esto el heartbeat no puede reportar voltaje. Solo toca el INA219 de sistema
+// (0x40), que está en el bus I2C siempre alimentado — no enciende ningún rail.
+
+bool sensors_initSystemMonitor() {
+    if (!_system_ok) {
+        _system_ok = ina219_system.begin();
+    }
+    return _system_ok;
+}
+
+float sensors_readSystemVoltage() {
+    if (!_system_ok) return NAN;
+    return ina219_system.getBusVoltage_V();
+}
+
+// =============================================================================
 //  Inicialización
 // =============================================================================
 
