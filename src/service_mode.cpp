@@ -3,7 +3,6 @@
 #include "sensors.h"        // monitor de batería durante la sesión
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
-#include <esp_ota_ops.h>    // para rollback
 #include <math.h>
 
 // ─── Variables RTC (definición) ───────────────────────────────────────────────
@@ -74,26 +73,31 @@ static bool _reconnectMqtt(PubSubClient& mqtt) {
 
 // ─── OTA setup ────────────────────────────────────────────────────────────────
 
-static bool otaInProgress = false;
-static bool otaSuccess    = false;
+static bool otaSuccess = false;
 
 static void _setupOTA() {
     ArduinoOTA.setHostname(OTA_HOSTNAME);
     ArduinoOTA.setPassword(OTA_PASSWORD);
 
     ArduinoOTA.onStart([]() {
-        otaInProgress = true;
-        otaSuccess    = false;
+        otaSuccess = false;
         String type = (ArduinoOTA.getCommand() == U_FLASH) ? "firmware" : "filesystem";
         LOG_V("OTA iniciando: %s", type.c_str());
     });
 
     ArduinoOTA.onEnd([]() {
-        otaInProgress = false;
-        otaSuccess    = true;
+        otaSuccess = true;
         LOG_V("OTA completado");
-        // Marcar la app como válida ANTES de reiniciar para habilitar rollback
-        esp_ota_mark_app_valid_cancel_rollback();
+        // Acá había un esp_ota_mark_app_valid_cancel_rollback(). Se sacó porque no
+        // hacía lo que decía el comentario: onEnd corre en el firmware VIEJO, antes
+        // del reinicio, así que marcaba válida la partición que ya estaba corriendo
+        // y no la recién escrita. Y la función cancela el rollback, no lo habilita.
+        //
+        // La imagen nueva la valida el core de Arduino en initArduino(), antes de
+        // setup(): si la partición está en ESP_OTA_IMG_PENDING_VERIFY llama a
+        // verifyOta() —weak, devuelve true por defecto— y la marca válida. Ver
+        // esp32-hal-misc.c. O sea que hoy toda imagen que bootee se acepta sin
+        // chequear nada; ver la nota sobre verifyOta() en aprendizajes_y_roadmap.md.
     });
 
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
@@ -101,8 +105,7 @@ static void _setupOTA() {
     });
 
     ArduinoOTA.onError([](ota_error_t error) {
-        otaInProgress = false;
-        otaSuccess    = false;
+        otaSuccess = false;
         LOG_E("OTA error [%u]", error);
         // No reiniciar — volver al loop del service mode para seguir esperando
     });

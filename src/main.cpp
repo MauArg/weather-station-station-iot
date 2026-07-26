@@ -48,6 +48,12 @@ void setup() {
     if (serviceMode_isActive()) {
         LOG_V("RTC indica service mode activo — retomando sin leer MQTT");
         if (!connectWiFi()) { goToDeepSleep(); return; }
+        // El retorno de connectMQTT() se ignora a propósito: este camino es el de
+        // después de un reflash, y serviceMode_run() levanta ArduinoOTA aunque no
+        // haya broker. Abortar acá si MQTT falla cerraría la ventana de OTA justo
+        // cuando más la necesitás — si el firmware nuevo salió mal, la única forma
+        // de corregirlo a distancia es que esa ventana se abra igual. Sin MQTT no
+        // hay heartbeats, pero el flasheo funciona.
         connectMQTT();
         // Crear un Command dummy para que evaluate() entre al run() directamente
         Command resumeCmd;
@@ -130,6 +136,20 @@ bool connectMQTT() {
     // publish entero y en silencio si no entra (buffer = header 5 + 2 + topic 20
     // + payload). 768 deja margen para el subsistema de viento pendiente.
     mqtt.setBufferSize(768);
+
+    // Keepalive: el default de PubSubClient es 15 s (PubSubClient.h). Con ese
+    // valor, un solo PINGREQ/PINGRESP perdido tumba la conexión — en un enlace
+    // marginal como el de la ubicación de campo eso pasa seguido, y es lo que
+    // hacía que el service mode se cortara y reiniciara. 60 s da 4× más margen.
+    // No cuesta nada en el ciclo normal: el nodo está despierto ~10 s, así que el
+    // keepalive nunca llega a dispararse ahí.
+    mqtt.setKeepAlive(60);
+
+    // Socket timeout: el default también es 15 s, y se paga entero cuando la
+    // conexión falla. En el ~17% de ciclos que no logran publicar, eso son 15 s
+    // extra despierto a 50-140 mA por nada. 5 s es holgado para un CONNACK en LAN
+    // (llega en decenas de ms) y recorta el costo de un ciclo fallido.
+    mqtt.setSocketTimeout(5);
 
     if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
         LOG_V("MQTT conectado");

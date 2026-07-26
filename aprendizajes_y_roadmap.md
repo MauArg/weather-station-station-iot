@@ -39,6 +39,12 @@ El approach con AS5600 (sensor de efecto Hall angular, I2C 0x36) requiere un im�
 - **GitHub devuelve 404 (no 403) para repos privados sin autenticar** — no es una falla de red, hay que reconocerlo como "repo privado, necesita auth" en vez de reintentar la conexión.
 - **Grafana: las variables "Constant"** requieren guardar el dashboard explícitamente para que el cambio se aplique.
 
+- **El rollback de OTA está compilado pero desarmado, y `esp_ota_mark_app_valid_cancel_rollback()` no hace lo que parece.** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` en el sdkconfig del core, o sea que una imagen recién flasheada arranca en `ESP_OTA_IMG_PENDING_VERIFY` y el bootloader la revertiría si nadie la valida. Pero el core de Arduino la valida solo: `initArduino()` (en `esp32-hal-misc.c`, antes de `setup()`) llama a `verifyOta()` —función *weak* que devuelve `true` por defecto— y marca la imagen válida. **Toda imagen que bootee se acepta sin chequear nada.** Además, la llamada que había en `ArduinoOTA.onEnd()` corría en el firmware *viejo* y marcaba válida la partición vieja, no la nueva; se eliminó.
+
+  Lo que sí sigue protegido sin hacer nada: un flash **cortado a la mitad** deja una imagen que no pasa la validación del bootloader, y arranca la partición anterior. El agujero es la imagen **completa pero rota**, que bootea y se acepta.
+
+  **Oportunidad pendiente de decisión**: sobrescribir `verifyOta()` con un chequeo de salud en el primer boot de una imagen nueva; si falla, el core hace `esp_ota_mark_app_invalid_rollback_and_reboot()` y vuelve sola a la versión anterior. Para un nodo en el techo eso es la diferencia entre un rollback automático y subir con el cable USB. **El riesgo es el falso positivo**: con ~17% de ciclos que fallan la conexión, un chequeo que dependa de WiFi o MQTT haría rollback de firmware perfectamente sano. Si se implementa, el criterio tiene que ser algo inequívoco y local — por ejemplo que el bus I2C responda — y nunca la red.
+
 (Los aprendizajes sobre I2C/pull-ups externos, `system_mW` no siendo consumo real, cold solder joints, InfluxDB `:2` fijo, y el drop-in de systemd para NFS ya están documentados en `componentes_y_conexiones.md`, `../i2c-bus-lockup-investigation.md` y `Readme.md` respectivamente.)
 
 ---

@@ -53,8 +53,14 @@
 
 // Reconexión de MQTT durante service mode. Antes una caída del broker abortaba la
 // sesión entera: el nodo dormía sin poder limpiar el retenido y al despertar
-// arrancaba de cero. 5 intentos × 2s dan ~10s de margen, suficiente para un
-// bache de WiFi sin dejar al nodo despierto de gusto si el enlace se cayó en serio.
+// arrancaba de cero.
+//
+// El peor caso no son los 10s que sugieren 5×2s: cada intento puede además
+// consumir el socket timeout esperando el CONNACK. Con setSocketTimeout(5) en
+// connectMQTT() queda en 5×(5+2) ≈ 35s. Importa porque durante ese bloqueo no se
+// llama a ArduinoOTA.handle(), así que si el enlace se cae justo cuando arrancás
+// un flash, espota puede darse por vencido — se reintenta y listo, pero conviene
+// saberlo antes de creer que el nodo se colgó.
 #define SERVICE_MODE_MQTT_RETRIES         5
 #define SERVICE_MODE_MQTT_RETRY_DELAY_MS  2000
 
