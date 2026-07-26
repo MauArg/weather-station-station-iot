@@ -7,9 +7,22 @@
 #include <math.h>
 
 // ─── Variables RTC (definición) ───────────────────────────────────────────────
-RTC_DATA_ATTR bool     rtc_inServiceMode    = false;
-RTC_DATA_ATTR uint32_t rtc_serviceStartEpoch = 0;
+RTC_DATA_ATTR bool     rtc_inServiceMode     = false;
 RTC_DATA_ATTR int      rtc_serviceTimeoutMin = SERVICE_MODE_DEFAULT_TIMEOUT_MIN;
+RTC_DATA_ATTR uint32_t rtc_serviceElapsedSec = 0;
+
+// ─── Detección de comando limpiado ────────────────────────────────────────────
+// A nivel de archivo y no dentro de serviceMode_run() porque hay que poder
+// reinstalar el callback después de una reconexión de MQTT.
+static volatile bool _cmdCleared = false;
+
+static void _serviceCmdCallback(char* topic, byte* payload, unsigned int length) {
+    (void)payload;
+    if (strcmp(topic, TOPIC_CMD) == 0 && length == 0) {
+        _cmdCleared = true;
+        LOG_V("Servidor limpió el comando — saliendo de service mode");
+    }
+}
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
@@ -42,16 +55,21 @@ static void _clearRetainedCmd(PubSubClient& mqtt) {
     LOG_V("Topic cmd limpiado en broker");
 }
 
-static int _remainingSeconds(uint32_t startEpoch, int timeoutMin) {
-    // Usamos millis() como proxy; no tenemos NTP en esta demo.
-    // Si se agrega NTP, reemplazar con epoch real para mayor precisión
-    // entre reinicios. Por ahora es suficiente para el timeout de sesión.
-    (void)startEpoch;
-    static uint32_t enterMillis = 0;
-    if (enterMillis == 0) enterMillis = millis();
-    long elapsed = (millis() - enterMillis) / 1000;
-    long total   = (long)timeoutMin * 60;
-    return max(0L, total - elapsed);
+// Reconecta MQTT sin abortar la sesión. El WiFi del ESP32 reasocia solo cuando el
+// AP vuelve, así que los reintentos espaciados le dan tiempo a recuperarse; lo que
+// hay que rehacer a mano es la suscripción, y el callback por las dudas.
+static bool _reconnectMqtt(PubSubClient& mqtt) {
+    for (int attempt = 1; attempt <= SERVICE_MODE_MQTT_RETRIES; attempt++) {
+        LOG_E("MQTT caído en service mode — reintento %d/%d", attempt, SERVICE_MODE_MQTT_RETRIES);
+        if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
+            mqtt.setCallback(_serviceCmdCallback);
+            mqtt.subscribe(TOPIC_CMD);
+            LOG_V("MQTT reconectado — sesión continúa");
+            return true;
+        }
+        delay(SERVICE_MODE_MQTT_RETRY_DELAY_MS);
+    }
+    return false;
 }
 
 // ─── OTA setup ────────────────────────────────────────────────────────────────
@@ -103,12 +121,18 @@ void serviceMode_evaluate(PubSubClient& mqtt, const Command& cmd) {
     if (cmd.type == CommandType::MAINTENANCE) {
         // Servidor pidió service mode
         if (!rtc_inServiceMode) {
-            // Primera entrada: registrar timestamp de inicio
-            // (usamos millis como proxy; ver nota en _remainingSeconds)
-            rtc_serviceStartEpoch = millis() / 1000;
             rtc_serviceTimeoutMin = cmd.timeout_min;
             rtc_inServiceMode     = true;
-            LOG_V("Entrando en service mode por comando (timeout: %d min)", cmd.timeout_min);
+            // rtc_serviceElapsedSec NO se reinicia acá a propósito. Este camino se
+            // recorre tanto en el primer armado como al re-entrar después de una
+            // salida fallida (MQTT caído, sin poder limpiar el retenido), y desde
+            // acá no se distinguen. Reiniciarlo devolvería el presupuesto entero en
+            // cada caída, que es justamente el bug. Se pone en cero cuando la sesión
+            // cierra bien, en serviceMode_exit(); si quedó un resto de una sesión
+            // que nunca pudo cerrar, el próximo armado arranca con menos margen —
+            // conservador, que es el lado correcto para equivocarse.
+            LOG_V("Entrando en service mode (timeout: %d min, ya consumidos: %u s)",
+                  cmd.timeout_min, rtc_serviceElapsedSec);
         } else {
             LOG_V("Continuando service mode (RTC persistido)");
         }
@@ -133,45 +157,47 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
         LOG_E("INA219 de sistema no respondió — heartbeats sin voltaje");
     }
 
-    _publishStatus(mqtt, "service_mode_active", timeoutMin * 60);
+    // Presupuesto absoluto: el timeout pedido menos lo ya consumido en sesiones
+    // anteriores que no pudieron cerrar. Sin esto cada reinicio estrenaba el
+    // timeout entero y el nodo podía quedar en ciclo indefinidamente.
+    const uint32_t totalSec = (uint32_t)timeoutMin * 60;
+    if (rtc_serviceElapsedSec >= totalSec) {
+        LOG_V("Presupuesto de service mode agotado (%u/%u s) — saliendo",
+              rtc_serviceElapsedSec, totalSec);
+        serviceMode_exit(mqtt, "timeout");
+        return;
+    }
+    const uint32_t budgetMs = (totalSec - rtc_serviceElapsedSec) * 1000;
+
+    // remaining_sec informa el saldo TOTAL, no el de esta sesión: si el nodo se
+    // reinició, la UI tiene que ver el tiempo real que queda y no un contador que
+    // vuelve a arrancar de cero.
+    _publishStatus(mqtt, "service_mode_active", (int)(budgetMs / 1000));
     _setupOTA();
 
-    uint32_t startMs           = millis();
-    uint32_t timeoutMs         = (uint32_t)timeoutMin * 60 * 1000;
-    uint32_t lastHeartbeatMs   = 0;
-    uint32_t lastCmdCheckMs    = 0;
-    const uint32_t CMD_CHECK_INTERVAL_MS  = 10000;  // chequear cmd topic c/ 10 seg
-    const uint32_t HEARTBEAT_INTERVAL_MS  = (uint32_t)SERVICE_MODE_HEARTBEAT_SEC * 1000;
+    uint32_t startMs         = millis();
+    uint32_t lastHeartbeatMs = 0;
+    const uint32_t HEARTBEAT_INTERVAL_MS = (uint32_t)SERVICE_MODE_HEARTBEAT_SEC * 1000;
 
-    // Variable local para detectar si el servidor limpió el comando durante la sesión
-    // El callback MQTT seteará esto a true si llega un payload vacío en TOPIC_CMD
-    static bool cmdCleared = false;
-    cmdCleared = false;
-
-    // Re-suscribir para recibir actualizaciones del topic de comando
+    _cmdCleared = false;
     mqtt.subscribe(TOPIC_CMD);
-    mqtt.setCallback([](char* topic, byte* payload, unsigned int length) {
-        if (strcmp(topic, TOPIC_CMD) == 0 && length == 0) {
-            cmdCleared = true;
-            LOG_V("Servidor limpió el comando — saliendo de service mode");
-        }
-    });
+    mqtt.setCallback(_serviceCmdCallback);
 
     while (true) {
         uint32_t now     = millis();
         uint32_t elapsed = now - startMs;
-        int      remaining = (int)((timeoutMs - elapsed) / 1000);
+        int      remaining = (int)((budgetMs - elapsed) / 1000);
 
         // ── Condición de salida: timeout ──────────────────────────────────────
-        if (elapsed >= timeoutMs) {
+        if (elapsed >= budgetMs) {
             LOG_V("Timeout de service mode alcanzado");
-            serviceMode_exit(mqtt, "timeout");
+            serviceMode_exit(mqtt, "timeout", elapsed / 1000);
             return;
         }
 
         // ── Condición de salida: servidor limpió el comando ───────────────────
-        if (cmdCleared) {
-            serviceMode_exit(mqtt, "cleared_by_server");
+        if (_cmdCleared) {
+            serviceMode_exit(mqtt, "cleared_by_server", elapsed / 1000);
             return;
         }
 
@@ -190,9 +216,10 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
         }
 
         // ── Mantener MQTT vivo ────────────────────────────────────────────────
-        if (!mqtt.connected()) {
-            LOG_E("MQTT desconectado durante service mode — reintentando");
-            // Aquí podrías agregar lógica de reconexión MQTT
+        // Reconectar en vez de abandonar. Abandonar era caro: la salida no podía
+        // limpiar el retenido con el broker caído, así que al despertar el nodo
+        // releía el comando y arrancaba una sesión nueva.
+        if (!mqtt.connected() && !_reconnectMqtt(mqtt)) {
             break;
         }
         mqtt.loop();
@@ -203,17 +230,21 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
         delay(100);
     }
 
-    // Llegamos aquí solo si MQTT se desconectó y no reconectó
-    serviceMode_exit(mqtt, "mqtt_disconnected");
+    // Solo se llega acá si MQTT se cayó y no reconectó tras todos los reintentos.
+    // El tiempo consumido se acumula igual, así que la próxima entrada arranca con
+    // el saldo y no con el presupuesto entero.
+    serviceMode_exit(mqtt, "mqtt_disconnected", (millis() - startMs) / 1000);
 }
 
-void serviceMode_exit(PubSubClient& mqtt, const char* reason) {
-    LOG_V("Saliendo de service mode: %s", reason);
+void serviceMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSec) {
+    LOG_V("Saliendo de service mode: %s (sesión: %u s)", reason, sessionSec);
 
-    // Limpiar estado RTC
-    rtc_inServiceMode     = false;
-    rtc_serviceStartEpoch = 0;
-    rtc_serviceTimeoutMin = SERVICE_MODE_DEFAULT_TIMEOUT_MIN;
+    rtc_inServiceMode = false;
+
+    // Acumular siempre, antes de saber si se va a poder cerrar limpio: si esta
+    // salida es por MQTT caído, el retenido sigue puesto y el nodo va a re-entrar,
+    // y tiene que hacerlo con el saldo y no con el presupuesto entero.
+    rtc_serviceElapsedSec += sessionSec;
 
     // Limpiar comando retenido en broker (si MQTT está disponible)
     if (mqtt.connected()) {
@@ -221,6 +252,11 @@ void serviceMode_exit(PubSubClient& mqtt, const char* reason) {
         _publishStatus(mqtt, "service_mode_ended", -1, reason);
         mqtt.loop();
         delay(200); // dar tiempo a que el broker procese los mensajes
+
+        // Se logró limpiar el retenido, así que no puede haber re-entrada: la
+        // sesión terminó de verdad y el próximo armado arranca de cero.
+        rtc_serviceElapsedSec = 0;
+        rtc_serviceTimeoutMin = SERVICE_MODE_DEFAULT_TIMEOUT_MIN;
     }
 
     // Volver al ciclo normal

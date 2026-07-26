@@ -51,6 +51,13 @@
 #define SERVICE_MODE_MAX_TIMEOUT_MIN      60          // techo absoluto ignorando lo que pida el servidor
 #define SERVICE_MODE_HEARTBEAT_SEC        30
 
+// Reconexión de MQTT durante service mode. Antes una caída del broker abortaba la
+// sesión entera: el nodo dormía sin poder limpiar el retenido y al despertar
+// arrancaba de cero. 5 intentos × 2s dan ~10s de margen, suficiente para un
+// bache de WiFi sin dejar al nodo despierto de gusto si el enlace se cayó en serio.
+#define SERVICE_MODE_MQTT_RETRIES         5
+#define SERVICE_MODE_MQTT_RETRY_DELAY_MS  2000
+
 // ─── Logging ──────────────────────────────────────────────────────────────────
 // LOG_LEVEL: 0=off, 1=error, 2=verbose
 #ifndef LOG_LEVEL
