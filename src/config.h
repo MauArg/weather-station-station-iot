@@ -1,8 +1,13 @@
 #pragma once
 
 // ─── Firmware ─────────────────────────────────────────────────────────────────
+// La versión real la define -DFIRMWARE_VERSION en platformio.ini, por entorno.
+// Este fallback es un centinela, no una versión: si aparece en la telemetría,
+// significa que el build salió de un entorno que se olvidó de definir el flag.
+// Antes decía "1.0.0", que era una versión que existió de verdad — un build mal
+// configurado quedaba indistinguible de un deploy legítimo de 1.0.0.
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION "1.0.0"
+  #define FIRMWARE_VERSION "0.0.0-nobuildflag"
 #endif
 
 // ─── Red ──────────────────────────────────────────────────────────────────────
