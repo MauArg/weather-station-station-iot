@@ -88,6 +88,20 @@ static void _setupOTA() {
     ArduinoOTA.onEnd([]() {
         otaSuccess = true;
         LOG_V("OTA completado");
+
+        // Devolver el presupuesto entero a la sesión de después del flasheo.
+        //
+        // El reinicio del OTA pasa dentro de ArduinoOTA.handle() y nunca pasa por
+        // serviceMode_exit(), así que el acumulador queda con lo consumido antes
+        // del flash. Si esta sesión venía de arrastre —por ejemplo 10 min de un
+        // presupuesto de 15— la sesión post-flash nacería con casi nada y el nodo
+        // se dormiría antes de publicar el service_mode_active con la versión
+        // nueva, que es de donde la UI saca la verificación del OTA.
+        //
+        // No reabre el ciclo infinito que motivó el acumulador: esto solo corre
+        // cuando alguien flasheó a propósito, y el deadline del backend sigue
+        // acotando el total pase lo que pase.
+        rtc_serviceElapsedSec = 0;
         // Acá había un esp_ota_mark_app_valid_cancel_rollback(). Se sacó porque no
         // hacía lo que decía el comentario: onEnd corre en el firmware VIEJO, antes
         // del reinicio, así que marcaba válida la partición que ya estaba corriendo

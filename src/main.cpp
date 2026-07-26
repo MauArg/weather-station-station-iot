@@ -29,6 +29,7 @@ void  mqttCallback(char* topic, byte* payload, unsigned int length);
 Command waitForRetainedCommand();
 void  publishTelemetry();
 void  handleCommand(const Command& cmd);
+void  clearRetainedCommand();
 void  goToDeepSleep();
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -253,9 +254,16 @@ void handleCommand(const Command& cmd) {
             ESP.restart();
             break;
 
+        // CONFIG y CALIBRATE son stubs, pero igual tienen que limpiar el retenido:
+        // un comando que se ejecuta y no se borra se vuelve a leer en cada wake,
+        // para siempre. Es el mismo problema que tenía REBOOT, solo que acá no
+        // reinicia nada — el nodo quedaría logueando "pendiente de implementación"
+        // indefinidamente y el cmd retenido nunca se iría del broker. Alcanzable
+        // desde la consola de JSON crudo de la UI.
         case CommandType::CONFIG:
             // TODO: implementar cambio de config en NVS
             LOG_V("Comando config — pendiente de implementación");
+            clearRetainedCommand();
             publishTelemetry();
             goToDeepSleep();
             break;
@@ -263,16 +271,30 @@ void handleCommand(const Command& cmd) {
         case CommandType::CALIBRATE:
             // TODO: implementar rutina de calibración
             LOG_V("Comando calibrate — pendiente de implementación");
+            clearRetainedCommand();
             publishTelemetry();
             goToDeepSleep();
             break;
 
         default:
             LOG_E("Comando no manejado — flujo normal");
+            clearRetainedCommand();
             publishTelemetry();
             goToDeepSleep();
             break;
     }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Limpiar el comando retenido
+// ═════════════════════════════════════════════════════════════════════════════
+// Un payload vacío con retain=true borra el mensaje retenido del broker. Todo
+// comando que se ejecuta tiene que hacer esto, si no vuelve a llegar en el
+// próximo wake y se repite indefinidamente.
+void clearRetainedCommand() {
+    mqtt.publish(TOPIC_CMD, "", true);
+    mqtt.loop();
+    delay(100);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
