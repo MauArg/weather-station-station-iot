@@ -8,6 +8,8 @@
 #include "command.h"
 #include "service_mode.h"
 #include "sensors.h"
+#include "logging.h"
+#include <esp_system.h>
 
 // ─── Clientes globales ────────────────────────────────────────────────────────
 WiFiClient   wifiClient;
@@ -42,6 +44,11 @@ void setup() {
 
     rtc_bootCount++;
     LOG_V("=== Boot #%u ===  Firmware: %s", rtc_bootCount, FIRMWARE_VERSION);
+
+    // El motivo del reset distingue un wake normal de un panic, un watchdog o
+    // una brownout. Es gratis y hoy no hay forma de saberlo en campo — la
+    // brownout es una hipótesis viva dada la situación solar/batería.
+    logging_write(LOG_BOOT, 0, (int16_t)esp_reset_reason());
 
     Wire.begin(I2C_SDA, I2C_SCL);
 
@@ -87,6 +94,7 @@ void loop() {
 // Conexión WiFi
 // ═════════════════════════════════════════════════════════════════════════════
 bool connectWiFi() {
+    const uint32_t wifiStartMs = millis();
     WiFi.mode(WIFI_STA);
 
     // IP estática
@@ -95,6 +103,9 @@ bool connectWiFi() {
     }
 
     for (int attempt = 1; attempt <= WIFI_MAX_RETRIES; attempt++) {
+        logging_write(LOG_WIFI_TRY, (uint8_t)attempt,
+                      (attempt == 1) ? (int16_t)rtc_wifiChannel : 0);
+
         // Primer intento usa caché si está disponible; los siguientes escanean
         if (attempt == 1 && rtc_wifiChannel > 0) {
             LOG_V("WiFi: intento %d/%d (canal cacheado %d)", attempt, WIFI_MAX_RETRIES, rtc_wifiChannel);
@@ -117,12 +128,18 @@ bool connectWiFi() {
             rtc_wifiChannel = WiFi.channel();
             memcpy(rtc_wifiBssid, WiFi.BSSID(), 6);
             LOG_V("WiFi OK — IP: %s  canal: %d  intento: %d", WiFi.localIP().toString().c_str(), rtc_wifiChannel, attempt);
+            logging_write(LOG_WIFI_OK, (uint8_t)attempt, (int16_t)WiFi.RSSI());
             return true;
         }
 
         LOG_E("WiFi timeout (intento %d/%d)", attempt, WIFI_MAX_RETRIES);
+        logging_write(LOG_WIFI_FAIL, (uint8_t)attempt, (int16_t)WiFi.status());
     }
 
+    // Este es el camino caro: WIFI_MAX_RETRIES × WIFI_TIMEOUT_MS pueden ser 45 s
+    // despierto a 50-140 mA sin publicar nada. Registrar cuánto costó es la mitad
+    // de la pregunta que el ~17% de ciclos perdidos no puede responder hoy.
+    logging_write(LOG_WIFI_GIVEUP, 0, (int16_t)((millis() - wifiStartMs) / 100));
     return false;
 }
 
@@ -152,12 +169,17 @@ bool connectMQTT() {
     // (llega en decenas de ms) y recorta el costo de un ciclo fallido.
     mqtt.setSocketTimeout(5);
 
+    const uint32_t mqttStartMs = millis();
     if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
         LOG_V("MQTT conectado");
+        logging_write(LOG_MQTT_OK, 0, (int16_t)(millis() - mqttStartMs));
         mqtt.subscribe(TOPIC_CMD);
         return true;
     }
     LOG_E("MQTT error: %d", mqtt.state());
+    // La otra mitad de la pregunta: con WiFi arriba y esto abajo, el ciclo se
+    // pierde igual pero la causa es completamente distinta.
+    logging_write(LOG_MQTT_FAIL, 0, (int16_t)mqtt.state());
     return false;
 }
 
@@ -199,6 +221,10 @@ Command waitForRetainedCommand() {
 // Despacho de comandos
 // ═════════════════════════════════════════════════════════════════════════════
 void handleCommand(const Command& cmd) {
+    if (cmd.type != CommandType::NONE) {
+        logging_write(LOG_CMD_RX, (uint8_t)cmd.type, 0);
+    }
+
     if (!cmd.valid) {
         LOG_E("Comando inválido — continuando con flujo normal");
         publishTelemetry();
@@ -276,6 +302,19 @@ void handleCommand(const Command& cmd) {
             goToDeepSleep();
             break;
 
+        case CommandType::LOG:
+            // No entra en service mode a propósito: el logging tiene que correr
+            // durante los ciclos normales de 60 s, que es justamente lo que se
+            // quiere observar. El nodo aplica la config, limpia el retenido y
+            // sigue de largo con el ciclo — el costo de capturar es un memcpy
+            // de 8 bytes, así que no cambia nada del consumo.
+            LOG_V("Comando log_on — nivel %u, entries %u", cmd.log_level, cmd.log_entries);
+            logging_configure(cmd.log_level, cmd.log_entries);
+            clearRetainedCommand();
+            publishTelemetry();
+            goToDeepSleep();
+            break;
+
         default:
             LOG_E("Comando no manejado — flujo normal");
             clearRetainedCommand();
@@ -337,13 +376,24 @@ void publishTelemetry() {
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
 
+    // Sólo mientras hay una captura corriendo: costo cero en operación normal,
+    // igual que el resto de los campos condicionales de arriba. Como capturar no
+    // cuesta energía, no hay auto-expiración por tiempo — la higiene correcta es
+    // que se vea, no un timer que apague la captura justo cuando servía.
+    if (logging_isActive()) {
+        doc["log_active"] = logging_level();
+        doc["log_count"]  = logging_count();
+    }
+
     char buf[768];
     size_t len = serializeJson(doc, buf);
     if (!mqtt.publish(TOPIC_TELEMETRY, buf, false)) {
         // Falla silenciosa si el payload excede el buffer — hacerla visible.
         LOG_E("Publish de telemetría falló (%u B) — ¿buffer MQTT corto?", (unsigned)len);
+        logging_write(LOG_PUBLISH_FAIL, 0, (int16_t)len);
     } else {
         LOG_V("Telemetría publicada (%u B)", (unsigned)len);
+        logging_write(LOG_PUBLISH_OK, 0, (int16_t)len);
     }
     mqtt.loop();
 }
@@ -353,6 +403,10 @@ void publishTelemetry() {
 // ═════════════════════════════════════════════════════════════════════════════
 void goToDeepSleep() {
     LOG_V("Entrando en deep sleep (%d seg)", SLEEP_INTERVAL_SEC);
+    // Cierra el ciclo en el log: el tiempo despierto es la métrica que conecta
+    // los fallos de conexión con el consumo (10 s de un ciclo sano contra los
+    // 45 s de uno que agota los reintentos de WiFi).
+    logging_write(LOG_SLEEP, 0, (int16_t)(millis() / 100));
     mqtt.disconnect();
     delay(200);
     WiFi.disconnect(true);

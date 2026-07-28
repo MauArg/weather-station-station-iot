@@ -157,7 +157,11 @@ Topics nuevos, **sin retain**, para no pelear contra la semántica del slot úni
 
 **El dump ocurre en service mode**, donde el nodo ya está despierto y suscripto. La UI puede encadenar todo detrás de un botón: entrar a service mode → pedir diccionario si hace falta → paginar → verificar → clear → salir.
 
-**Codificación**: base64 del slice binario crudo del ring. JSON con arrays de números infla ~3×; base64 infla 1,33× y el struct es de tamaño fijo, así que cortar en páginas es aritmética simple. Con 741 B útiles menos topic y wrapper JSON quedan ~650 B de base64 = ~487 B binarios ≈ **60 entries por página**, o sea 13 páginas para un ring lleno de 768.
+**Codificación**: base64 del slice binario crudo del ring. JSON con arrays de números infla ~3×; base64 infla 1,33× y el struct es de tamaño fijo, así que cortar en páginas es aritmética simple.
+
+Presupuesto real, contado byte por byte: el buffer MQTT son 768 B, menos header (5), largo (2) y el topic `station/01/log/data` (19) → **742 B útiles**. El wrapper JSON en su peor caso mide 77 B (`dropped` es uint32 y puede llegar a 10 dígitos), así que quedan 665 B para el base64 = 498 B binarios = 62 entries.
+
+Se usan **55 entries por página** (440 B → 588 B de base64 → 665 B de payload, 77 B de margen), o sea **14 páginas** para un ring lleno de 768. Con 60 el margen bajaba a 25 B, y pasarse no falla ruidosamente: `serializeJson` trunca en silencio y recién después `publish()` rechaza el mensaje, dejando esa página irrecuperable por más que el backend la reintente.
 
 ### Borrado en dos fases
 
@@ -186,6 +190,6 @@ El nodo **no borra hasta que el backend confirma** que recibió todas las págin
 
 ## Pendientes de decisión
 
-- **Umbral exacto de `LOG_RING_ENTRIES`** — 768 es la propuesta; hay que confirmar contra el uso real de RTC memory del sistema al linkear.
+- ~~**Umbral exacto de `LOG_RING_ENTRIES`**~~ — **resuelto: 768 entries (6144 B)**. Medido sobre el ELF de `production` con 768: las secciones RTC terminan en `0x50001850`, o sea **6224 B usados de los 8176 disponibles**, con **1952 B libres**. Técnicamente entrarían ~1000 entries, pero se deja el margen: los contadores de pulsos del anemómetro y el pluviómetro, que son un TODO conocido en `config.h`, también van a vivir en RTC memory.
 - **Formato del export** — NDJSON ya se usa para el visor de payloads de service mode; conviene reusarlo por consistencia, pero necesita un header con el diccionario.
 - **Tier de flash (SPIFFS)** — hay 320 KB declarados y sin usar en `partitions_ota.csv`. Daría días en vez de horas y sobreviviría a la pérdida total de energía, a costa de un mount por wake y riesgo de corrupción por brownout. **Decidido no hacerlo por ahora**: RTC sola resuelve el caso de uso concreto. Se reconsidera si aparece una investigación que necesite días.

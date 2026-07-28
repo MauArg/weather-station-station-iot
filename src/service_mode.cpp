@@ -1,6 +1,7 @@
 #include "service_mode.h"
 #include "config.h"
 #include "sensors.h"        // monitor de batería durante la sesión
+#include "logging.h"        // dump de logs — el nodo está despierto y conectado
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <math.h>
@@ -15,11 +16,45 @@ RTC_DATA_ATTR uint32_t rtc_serviceElapsedSec = 0;
 // reinstalar el callback después de una reconexión de MQTT.
 static volatile bool _cmdCleared = false;
 
+// ─── Pedidos de log pendientes ────────────────────────────────────────────────
+// El callback sólo parsea y deja el pedido acá; la respuesta se publica desde
+// el loop. Publicar desde adentro del callback de PubSubClient es reentrar en
+// el mismo buffer que se está leyendo.
+static volatile bool     _logReqPending = false;
+static volatile uint8_t  _logReqKind    = 0;   // 1=página  2=diccionario  3=clear
+static volatile uint16_t _logReqArg     = 0;
+static volatile bool     _logReqKeep    = false;
+
 static void _serviceCmdCallback(char* topic, byte* payload, unsigned int length) {
-    (void)payload;
     if (strcmp(topic, TOPIC_CMD) == 0 && length == 0) {
         _cmdCleared = true;
         LOG_V("Servidor limpió el comando — saliendo de service mode");
+        return;
+    }
+
+    if (strcmp(topic, TOPIC_LOG_REQ) == 0 && length > 0) {
+        JsonDocument doc;
+        if (deserializeJson(doc, payload, length)) {
+            LOG_E("log/req: JSON inválido");
+            return;
+        }
+
+        if (doc["clear"].as<bool>()) {
+            _logReqKind = 3;
+            _logReqKeep = doc["keep"] | false;
+        } else if (doc["dict"].as<bool>()) {
+            _logReqKind = 2;
+            int from    = doc["from"] | 0;
+            _logReqArg  = (from < 0) ? 0 : (uint16_t)from;
+        } else if (doc["page"].is<int>()) {
+            _logReqKind = 1;
+            int page    = doc["page"] | 0;
+            _logReqArg  = (page < 0) ? 0 : (uint16_t)page;
+        } else {
+            LOG_E("log/req: pedido no reconocido");
+            return;
+        }
+        _logReqPending = true;
     }
 }
 
@@ -54,6 +89,110 @@ static void _clearRetainedCmd(PubSubClient& mqtt) {
     LOG_V("Topic cmd limpiado en broker");
 }
 
+// ─── Respuestas del dump de logs ──────────────────────────────────────────────
+
+static void _publishLogPage(PubSubClient& mqtt, uint16_t page) {
+    // 60 entries × 8 B = 480 B binarios → 640 B de base64 + terminador.
+    static char b64[LOG_ENTRIES_PER_PAGE * 8 * 4 / 3 + 8];
+    uint16_t n = 0;
+
+    JsonDocument doc;
+    doc["page"]  = page;
+    doc["pages"] = logging_pageCount();
+
+    if (!logging_encodePage(page, b64, sizeof(b64), &n)) {
+        doc["error"] = "no_page";
+    } else {
+        doc["count"]   = logging_count();
+        // Lo pisado por wraparound: es lo que distingue una captura completa de
+        // una truncada. Sin este número no se sabe si la ventana llegó a cubrir
+        // el evento que se estaba buscando.
+        doc["dropped"] = logging_dropped();
+        doc["entries"] = n;
+        doc["b64"]     = b64;
+    }
+
+    char buf[768];
+    size_t len = serializeJson(doc, buf);
+    if (!mqtt.publish(TOPIC_LOG_DATA, buf, false)) {
+        LOG_E("log page %u no se pudo publicar (%u B)", page, (unsigned)len);
+    }
+}
+
+// El diccionario no entra en un solo mensaje, así que también va paginado — por
+// índice de código en vez de por offset de bytes. El backend lo pide una vez por
+// versión de firmware y lo cachea.
+static void _publishLogDictPage(PubSubClient& mqtt, uint16_t from) {
+    JsonDocument doc;
+    doc["dict"] = true;
+    doc["from"] = from;
+    doc["fw"]   = FIRMWARE_VERSION;   // clave de caché del backend
+    JsonArray codes = doc["codes"].to<JsonArray>();
+
+    size_t   budget = 560;            // presupuesto de cuerpo JSON, con margen
+    uint16_t i      = from;
+    const uint8_t total = logging_codeCount();
+
+    for (; i < total; i++) {
+        const char* name = logging_codeName(i);
+        const char* tmpl = logging_codeTemplate(i);
+        size_t cost = strlen(name) + strlen(tmpl) + 24;  // llaves, claves, comillas
+
+        // Siempre emitir al menos un código: si uno solo excediera el
+        // presupuesto, cortar acá dejaría al backend pidiendo la misma página
+        // para siempre sin avanzar nunca.
+        if (cost > budget && i > from) break;
+        budget = (cost > budget) ? 0 : budget - cost;
+
+        JsonObject o = codes.add<JsonObject>();
+        o["c"] = i;
+        o["n"] = name;
+        o["t"] = tmpl;
+    }
+
+    if (i < total) doc["next"] = i;
+    else           doc["done"] = true;
+
+    char buf[768];
+    size_t len = serializeJson(doc, buf);
+    if (!mqtt.publish(TOPIC_LOG_DATA, buf, false)) {
+        LOG_E("dict page desde %u no se pudo publicar (%u B)", from, (unsigned)len);
+    }
+}
+
+// Borrado en dos fases: el nodo llega acá sólo cuando el backend ya confirmó
+// que tiene todas las páginas. Después de horas de captura, una transferencia
+// incompleta no puede costar la sesión entera.
+static void _handleLogClear(PubSubClient& mqtt, bool keep) {
+    logging_clear();
+    if (!keep) logging_configure(0, 0);
+
+    JsonDocument doc;
+    doc["cleared"] = true;
+    doc["keep"]    = keep;
+    doc["active"]  = logging_isActive();
+
+    char buf[128];
+    serializeJson(doc, buf);
+    mqtt.publish(TOPIC_LOG_DATA, buf, false);
+    LOG_V("Logs borrados (keep=%d, activo=%d)", keep, logging_isActive());
+}
+
+static void _serveLogRequest(PubSubClient& mqtt) {
+    _logReqPending = false;
+    const uint8_t  kind = _logReqKind;
+    const uint16_t arg  = _logReqArg;
+    const bool     keep = _logReqKeep;
+
+    switch (kind) {
+        case 1: _publishLogPage(mqtt, arg);     break;
+        case 2: _publishLogDictPage(mqtt, arg); break;
+        case 3: _handleLogClear(mqtt, keep);    break;
+        default: break;
+    }
+    mqtt.loop();
+}
+
 // Reconecta MQTT sin abortar la sesión. El WiFi del ESP32 reasocia solo cuando el
 // AP vuelve, así que los reintentos espaciados le dan tiempo a recuperarse; lo que
 // hay que rehacer a mano es la suscripción, y el callback por las dudas.
@@ -63,6 +202,7 @@ static bool _reconnectMqtt(PubSubClient& mqtt) {
         if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
             mqtt.setCallback(_serviceCmdCallback);
             mqtt.subscribe(TOPIC_CMD);
+            mqtt.subscribe(TOPIC_LOG_REQ);
             LOG_V("MQTT reconectado — sesión continúa");
             return true;
         }
@@ -190,14 +330,17 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
     // reinició, la UI tiene que ver el tiempo real que queda y no un contador que
     // vuelve a arrancar de cero.
     _publishStatus(mqtt, "service_mode_active", (int)(budgetMs / 1000));
+    logging_write(LOG_SERVICE_ENTER, 0, (int16_t)(budgetMs / 1000));
     _setupOTA();
 
     uint32_t startMs         = millis();
     uint32_t lastHeartbeatMs = 0;
     const uint32_t HEARTBEAT_INTERVAL_MS = (uint32_t)SERVICE_MODE_HEARTBEAT_SEC * 1000;
 
-    _cmdCleared = false;
+    _cmdCleared    = false;
+    _logReqPending = false;
     mqtt.subscribe(TOPIC_CMD);
+    mqtt.subscribe(TOPIC_LOG_REQ);
     mqtt.setCallback(_serviceCmdCallback);
 
     while (true) {
@@ -241,6 +384,13 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
         }
         mqtt.loop();
 
+        // ── Atender pedidos de log ────────────────────────────────────────────
+        // Acá y no en el callback: publicar desde adentro del callback de
+        // PubSubClient reentra en el buffer que se está leyendo.
+        if (_logReqPending) {
+            _serveLogRequest(mqtt);
+        }
+
         // ── Manejar OTA ───────────────────────────────────────────────────────
         ArduinoOTA.handle();
 
@@ -255,6 +405,14 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
 
 void serviceMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSec) {
     LOG_V("Saliendo de service mode: %s (sesión: %u s)", reason, sessionSec);
+
+    // El motivo se codifica acá y su interpretación viaja en la plantilla del
+    // diccionario, así que el backend no necesita conocer estos strings.
+    uint8_t reasonCode = 0;
+    if      (strcmp(reason, "timeout") == 0)           reasonCode = 1;
+    else if (strcmp(reason, "cleared_by_server") == 0) reasonCode = 2;
+    else if (strcmp(reason, "mqtt_disconnected") == 0) reasonCode = 3;
+    logging_write(LOG_SERVICE_EXIT, reasonCode, (int16_t)sessionSec);
 
     rtc_inServiceMode = false;
 

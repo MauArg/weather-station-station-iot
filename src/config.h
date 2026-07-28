@@ -82,6 +82,39 @@
   #define LOG_E(fmt, ...) do {} while(0)
 #endif
 
+// ─── Sistema de logs en runtime (por MQTT) ────────────────────────────────────
+// No confundir con LOG_LEVEL de arriba: aquel es compile-time y sale por Serial.
+// Éste se activa por comando y se recupera a distancia. Ver logging_system_design.md.
+//
+// El ring vive en RTC memory, que en el ESP32-C3 son 8176 B en total
+// (memory.ld → rtc_iram_seg, 0x2000 - 0x10) compartidos con el resto de las
+// variables RTC y con lo que reserve el sistema. 768 × 8 B = 6144 B deja margen.
+// Si se pasa, el linker falla con "region rtc_iram_seg overflowed" — el error
+// aparece al compilar, no en campo.
+#define LOG_RING_ENTRIES      768
+#define LOG_MAX_LEVEL         3
+
+// Entries por página del dump.
+//
+// Presupuesto real: el buffer MQTT son 768 B, menos header (5), largo (2) y
+// topic `station/01/log/data` (19) → 742 B útiles de payload. El wrapper JSON en
+// su peor caso —`dropped` es uint32 y puede llegar a 10 dígitos— mide 77 B:
+//   {"page":12,"pages":13,"count":768,"dropped":4294967295,"entries":55,"b64":""}
+// Quedan 665 B para el base64, que a 3/4 son 498 B binarios = 62 entries.
+//
+// 55 se elige por margen: 55 × 8 B = 440 B → 588 B de base64 → 665 B de payload,
+// 77 B por debajo del límite. Con 60 el margen bajaba a 25 B, y pasarse no falla
+// ruidosamente de entrada: `serializeJson` trunca en silencio y sólo después
+// `publish()` rechaza el mensaje, dejando esa página imposible de recuperar por
+// más que el backend la reintente.
+#define LOG_ENTRIES_PER_PAGE  55
+
+// Topics del dump. Sin retain a propósito: `cmd` es retenido y de slot único, y
+// un ida y vuelta de N páginas ahí pelearía contra esa semántica además de
+// bloquear el slot para cualquier otro comando.
+#define TOPIC_LOG_REQ       "station/01/log/req"
+#define TOPIC_LOG_DATA      "station/01/log/data"
+
 // ─── Red (IP estática) ────────────────────────────────────────────────────────
 #define WIFI_STATIC_IP      IPAddress(192, 168, 18, 105)
 #define WIFI_GATEWAY        IPAddress(192, 168, 18, 1)
