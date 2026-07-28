@@ -84,3 +84,41 @@ Reconciliado con el estado real al 2026-07-11 (el snapshot original venía del p
 - ❓ **Modos adaptativos de firmware** (día/noche por voltaje solar, tiers de energía por voltaje de batería) — `componentes_y_conexiones.md` ya documenta los umbrales de tiers como diseño vigente; no se re-verificó línea por línea contra el firmware actual en esta sesión.
 - ⏳ **Calibración de lluvia en Grafana** — `rain_wet_ref=0.3` sigue siendo un placeholder, falta dato real de lluvia intensa.
 - ❓ **Alcance de WiFi** — faltaban ~5m de cobertura; se subió la potencia de transmisión del TP-Link AX3000 a "High" como primer intento, resultado sin confirmar en esta sesión.
+
+---
+
+## Evolución candidata: nodo "offline" con RTC + almacenamiento local (idea de Mau, 2026-07-27)
+
+Surgida mientras se diseñaba el sistema de logs. La idea: un nodo que **no depende de la red** — recolecta datos, los guarda localmente con timestamp real, y el operador se acerca cada muchos días o meses a descargarlos por Bluetooth. Caso de uso concreto: Mau tiene un terreno sin servicios donde se podría instalar uno.
+
+Es un cambio de categoría, no una feature: el nodo pasa de "sensor conectado" a "data logger con sincronización ocasional". No aplica al nodo actual — aplica a una placa v3.
+
+### El premio real es energético, no de conectividad
+
+En el nodo actual el WiFi domina todo: ~10 s despierto a 80-140 mA por ciclo. Un ciclo sin red —despertar, leer sensores, escribir a almacenamiento local, dormir— es del orden de 1 s a ~20 mA. Son casi dos órdenes de magnitud por ciclo. Eso es lo que habilita el "ultra low power" que mencionaba la idea: meses de autonomía, o el mismo tiempo con un panel mucho más chico. La descarga ocasional por BLE se paga una vez cada muchos días, no 1440 veces por día.
+
+### RTC con pila propia — encaja en el nodo actual
+
+- **No consume GPIOs**: es I2C, cuelga del bus que ya existe (donde ya están los dos INA219). Un DS3231 vive en 0x68, sin conflicto con 0x40/0x41.
+- **Cuidado con el consumo**: un DS3231 alimentado consume ~100-200 µA, contra un objetivo de deep sleep de <50 µA. Puesto en el rail always-on arruinaría el presupuesto por 4×.
+- **La topología correcta ya existe en la placa**: colgarlo de un **rail conmutado** (Rail A). Mantiene la hora con su pila de botón mientras está sin alimentar, y se energiza sólo durante el wake para leerlo. Costo en deep sleep ≈ 0. Es exactamente lo que la placa ya hace con los otros sensores.
+- **A verificar antes de comprar**: en el DS3231 la interfaz I2C se deshabilita cuando corre desde Vbat. Para este uso da igual (sólo se lee con Vcc presente), pero hay que confirmarlo en el datasheet.
+- **Beneficio secundario que no es menor**: el timer de deep sleep del ESP32 corre sobre un oscilador RC interno con ±5% de precisión — sobre un día son ±72 min de deriva. Un RTC da alineación a hora de pared real, y de paso vuelve innecesario el esquema de interpolación de timestamps del sistema de logs.
+
+### microSD — bloqueada por pines en la placa actual
+
+**No entra.** Sólo quedan libres **GPIO20 y GPIO21** (ver `componentes_y_conexiones.md` → "GPIOs asignados"; GPIO9 es el botón BOOT físico y no se puede usar). SPI necesita 4 pines (MOSI, MISO, SCK, CS) y SDIO en modo 1-bit necesita 3 más CS. Encima GPIO20 ya está pre-asignado al `LED_EN` del PCF8574 si se va por la vía óptica para dirección de viento.
+
+Además, aun con pines disponibles: las escrituras a SD son ráfagas de 50-100 mA y las tarjetas son notoriamente frágiles ante cortes de energía a mitad de escritura — mal match para un nodo solar.
+
+**Alternativa que sí entra sin tocar un solo pin**: una FRAM o EEPROM I2C, colgada del mismo bus. Una FM24CL64 (8 KB de FRAM) tiene endurance prácticamente infinita (10¹² ciclos) contra el millón de una EEPROM; una 24LC512 da 64 KB. A ~50 B por muestra, 64 KB son ~1300 muestras: 9 días a una muestra cada 10 min, o ~54 días a una por hora. Para el nodo offline probablemente haya que ir a algo más grande o encadenar varios chips, pero la topología es la correcta y el costo en GPIOs es cero.
+
+### Bluetooth para la descarga
+
+El ESP32-C3 tiene BLE 5.0, así que el nodo actual ya tendría la radio. Lo interesante es del lado del operador: **Web Bluetooth desde Chrome en Android permitiría reusar el dashboard React que ya existe**, sin escribir una app nativa. Limitación conocida: Web Bluetooth no funciona en Safari/iOS.
+
+Números para dimensionar: 6 meses a una muestra cada 10 min son ~26.000 muestras ≈ 1,3 MB. A la velocidad realista de BLE en el C3 (~20 KB/s) es alrededor de un minuto de descarga. Perfectamente viable.
+
+### Lo que habría que resolver del lado del backend
+
+El pipeline actual asume datos **en vivo**. Ingerir un lote de muestras de hace seis meses es un camino distinto: hay que aceptar backfill histórico, deduplicar contra lo que ya se importó, y decidir qué pasa si el reloj del nodo derivó o se reinició. No es difícil, pero es trabajo que hoy no existe.
