@@ -18,13 +18,23 @@ static RTC_NOINIT_ATTR uint16_t rtc_logCapacity;
 static RTC_NOINIT_ATTR uint32_t rtc_logDropped;
 static RTC_NOINIT_ATTR uint8_t  rtc_logLevel;
 
-// Marca de validez del bloque de arriba, más la geometría con la que se escribió.
-// La mágica distingue "estado nuestro" de basura de power-on; la geometría atrapa
-// el caso de un firmware futuro que cambie el tamaño del ring o de la entry, donde
-// el estado viejo dejaría de ser interpretable.
+// Identidad del estado de arriba: mágica, geometría y huella del diccionario.
+//
+// - La mágica distingue "estado nuestro" de basura de un power-on.
+// - La geometría atrapa un firmware futuro que cambie el tamaño del ring o de la
+//   entry, donde lo persistido dejaría de ser interpretable.
+// - La huella del diccionario atrapa el caso que las otras dos NO ven: como el
+//   ring ahora sobrevive a un reflash, un firmware que agregue o reordene códigos
+//   —el cambio futuro más natural de todos— heredaría entries viejas con la misma
+//   geometría, y el backend las decodificaría con el diccionario nuevo. Saldrían
+//   silenciosamente mal etiquetadas, que es peor que perderlas.
+//
+// OJO: nada de esto detecta un cambio de *layout* de este bloque. Si se agregan o
+// reordenan variables acá, hay que bumpear LOG_STATE_MAGIC a mano.
 static RTC_NOINIT_ATTR uint32_t rtc_logMagic;
 static RTC_NOINIT_ATTR uint16_t rtc_logGeomEntries;
 static RTC_NOINIT_ATTR uint8_t  rtc_logGeomEntryLen;
+static RTC_NOINIT_ATTR uint32_t rtc_logDictHash;
 
 static constexpr uint32_t LOG_STATE_MAGIC = 0x4C4F4731u;  // "LOG1"
 
@@ -51,15 +61,36 @@ static const char* const LOG_CODE_TEMPLATE[] = {
 
 // ─── Arranque ─────────────────────────────────────────────────────────────────
 
+// FNV-1a sobre nombres, plantillas y niveles del diccionario. Recorrer ~800 bytes
+// una vez por boot es despreciable, y es lo que hace que "estas entries se pueden
+// leer con mi diccionario" sea una pregunta con respuesta.
+static uint32_t _dictFingerprint() {
+    uint32_t h = 2166136261u;
+    for (uint8_t i = 0; i < LOG_CODE_COUNT; i++) {
+        for (const char* p = LOG_CODE_NAME[i]; *p; ++p) {
+            h = (h ^ (uint8_t)*p) * 16777619u;
+        }
+        for (const char* p = LOG_CODE_TEMPLATE[i]; *p; ++p) {
+            h = (h ^ (uint8_t)*p) * 16777619u;
+        }
+        h = (h ^ LOG_CODE_LEVEL[i]) * 16777619u;
+        h = (h ^ 0xFFu) * 16777619u;   // separador: evita colisiones por concatenación
+    }
+    return h;
+}
+
 void logging_begin() {
     // Los chequeos de invariantes van más allá de la mágica a propósito. La mágica
     // sola ya distingue basura de power-on, pero cuestan tres comparaciones y
     // convierten cualquier corrupción sutil en un reinicio limpio en vez de en un
     // índice fuera de rango — que en RTC memory pisaría las variables de al lado.
+    const uint32_t dictHash = _dictFingerprint();
+
     const bool sane =
         rtc_logMagic        == LOG_STATE_MAGIC &&
         rtc_logGeomEntries  == LOG_RING_ENTRIES &&
         rtc_logGeomEntryLen == sizeof(LogEntry) &&
+        rtc_logDictHash     == dictHash &&
         rtc_logLevel        <= LOG_MAX_LEVEL &&
         rtc_logCapacity     <= LOG_RING_ENTRIES &&
         rtc_logCount        <= rtc_logCapacity &&
@@ -70,12 +101,13 @@ void logging_begin() {
     rtc_logMagic        = LOG_STATE_MAGIC;
     rtc_logGeomEntries  = LOG_RING_ENTRIES;
     rtc_logGeomEntryLen = sizeof(LogEntry);
+    rtc_logDictHash     = dictHash;
     rtc_logLevel        = 0;
     rtc_logCapacity     = 0;
     rtc_logHead         = 0;
     rtc_logCount        = 0;
     rtc_logDropped      = 0;
-    LOG_V("logging: estado en RTC reiniciado (arranque en frio o geometria distinta)");
+    LOG_V("logging: estado en RTC reiniciado (arranque en frio, o firmware con otra geometria/diccionario)");
 }
 
 // ─── Escritura ────────────────────────────────────────────────────────────────

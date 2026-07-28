@@ -97,6 +97,12 @@ void logging_begin();
 
 // Registra un evento. Barata y segura de llamar siempre: si el logging está
 // apagado o el código está por encima del nivel activo, retorna sin hacer nada.
+//
+// NO es segura desde una ISR: la actualización de head/count/dropped no es
+// atómica, así que una interrupción a mitad de camino puede dejar el ring
+// inconsistente. Importa porque `config.h` tiene pendiente el conteo por
+// interrupción del anemómetro y el pluviómetro — si esos handlers alguna vez
+// quieren loguear, hay que encolar y escribir desde el hilo principal.
 void logging_write(uint8_t code, uint8_t a, int16_t b);
 
 // Activa (level 1-3) o desactiva (level 0). Limpia el ring siempre: activar

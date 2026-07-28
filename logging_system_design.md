@@ -75,9 +75,25 @@ Según `esp_attr.h` del core, `RTC_DATA_ATTR` conserva el valor *"during a deep 
 
 Lo grave no era perder los datos sino que era **silencioso**: la captura se desarmaba sola y la UI mostraba "Captura detenida" sin explicación. Y había una ironía — el `esp_reset_reason()` del evento de boot existe justamente para distinguir brownout de panic, pero esa entry nunca llegaba a escribirse, porque cuando `setup()` la intentaba el nivel ya era 0.
 
-El precio de `.rtc_noinit` es que arranca con basura en un power-on. Por eso `logging_begin()` valida, antes del primer `logging_write()`, una palabra mágica más la geometría (tamaño del ring y de la entry) más los invariantes del ring. La geometría cubre el caso de un firmware futuro que cambie `LOG_RING_ENTRIES`: el estado viejo dejaría de ser interpretable y se descarta. Los invariantes son defensa en profundidad — cuestan tres comparaciones y convierten una corrupción sutil en un reinicio limpio en vez de en un índice fuera de rango, que en RTC memory pisaría las variables de al lado.
+El precio de `.rtc_noinit` es que arranca con basura en un power-on. Por eso `logging_begin()` valida, antes del primer `logging_write()`, cuatro cosas:
+
+| Chequeo | Qué atrapa |
+|---|---|
+| Palabra mágica | Basura de un power-on |
+| Geometría (`LOG_RING_ENTRIES`, `sizeof(LogEntry)`) | Un firmware futuro que cambie el tamaño del ring o de la entry |
+| **Huella del diccionario** (FNV-1a sobre nombres, plantillas y niveles) | Un firmware que agregue o reordene códigos |
+| Invariantes de `head`/`count`/capacidad | Corrupción sutil que pasó los anteriores |
+
+La huella del diccionario merece explicación porque cubre el único caso que los otros tres **no** ven, y es el más probable de todos: ahora que el ring sobrevive a un reflash, un firmware que agregue un código de log heredaría entries viejas con la misma geometría, y el backend las decodificaría con el diccionario nuevo. Saldrían **silenciosamente mal etiquetadas**, que es peor que perderlas. Con la huella, un cambio de diccionario descarta la captura y se arranca limpio. Cambiar entre los builds `production` y `development` no la altera —el diccionario es el mismo— así que ahí la captura sí sobrevive, que es lo correcto.
+
+Los invariantes son defensa en profundidad: cuestan tres comparaciones y convierten una corrupción sutil en un reinicio limpio en vez de en un índice fuera de rango, que en RTC memory pisaría las variables de al lado.
 
 Efecto secundario: `.rtc_noinit` es `NOBITS`, así que los 6 KB del ring **dejaron de ocupar lugar en la imagen de flash**.
+
+**Dos cosas que esto NO cubre**, y conviene tenerlas escritas:
+
+- **Un cambio de layout de ese bloque de variables.** Si se agregan o reordenan las `RTC_NOINIT_ATTR` de `logging.cpp`, la mágica se lee de otra dirección y podría coincidir con datos viejos. Hay que **bumpear `LOG_STATE_MAGIC` a mano**.
+- **La retención en una brownout es best-effort.** Si la tensión cae por debajo de lo que el dominio RTC necesita para retener, el contenido se pierde igual — y la pérdida puede ser parcial: la mágica sobrevive mientras el ring se corrompe. En ese caso las entries salen con códigos y argumentos sin sentido; el backend las muestra como código desconocido cuando el número no existe, pero un byte corrupto que caiga dentro del rango válido se va a ver como un evento real con argumentos absurdos. Es visible a ojo, no silencioso, y no justifica un CRC que habría que mantener en cada escritura.
 
 `LOG_RING_ENTRIES` es **compile-time** — la RTC memory no se puede redimensionar en runtime. Default propuesto: **768 entries = 6 KB**, dejando margen sobre los 8176 B para el sistema y las otras variables RTC. Si se pasa, el linker falla con `region rtc_iram_seg overflowed`, así que el error se detecta al compilar y no en campo.
 
