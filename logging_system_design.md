@@ -35,6 +35,7 @@ necesito debuggear algo
 | Restricción | Consecuencia |
 |---|---|
 | El deep sleep borra la RAM normal | El buffer vive en **RTC memory** |
+| `RTC_DATA_ATTR` sólo sobrevive al deep sleep; un panic, un watchdog, una brownout o un reboot lo recargan desde flash | El estado va en **`RTC_NOINIT_ATTR`**, validado con una palabra mágica |
 | El ESP32-C3 tiene **8176 B de RTC memory** y nada más (`memory.ld:59`, `0x2000 - 0x10`; en el C3 `rtc_data_seg`/`rtc_slow_seg`/`rtc_iram_seg` son la misma región) | La captura se mide en **horas, no en días** |
 | No hay RTC de hardware ni NTP, y `millis()` se reinicia en cada ciclo | No se puede timestampear en el nodo; lo reconstruye el backend |
 | El topic `cmd` es **retenido y de slot único** | El comando se consume y se limpia en el acto; el estado vive en RTC |
@@ -60,12 +61,23 @@ Ocho bytes, alineado, sin punteros ni strings. Escribir una entry es un `memcpy`
 ## Ring en RTC memory
 
 ```c
-RTC_DATA_ATTR LogEntry rtc_logRing[LOG_RING_ENTRIES];
-RTC_DATA_ATTR uint16_t rtc_logHead;      // próxima posición a escribir
-RTC_DATA_ATTR uint16_t rtc_logCount;     // entries válidas (satura en LOG_RING_ENTRIES)
-RTC_DATA_ATTR uint32_t rtc_logDropped;   // entries perdidas por wraparound
-RTC_DATA_ATTR uint8_t  rtc_logLevel;     // 0 = off
+RTC_NOINIT_ATTR LogEntry rtc_logRing[LOG_RING_ENTRIES];
+RTC_NOINIT_ATTR uint16_t rtc_logHead;      // próxima posición a escribir
+RTC_NOINIT_ATTR uint16_t rtc_logCount;     // entries válidas (satura en la capacidad)
+RTC_NOINIT_ATTR uint32_t rtc_logDropped;   // entries pisadas al dar la vuelta
+RTC_NOINIT_ATTR uint8_t  rtc_logLevel;     // 0 = off
+RTC_NOINIT_ATTR uint32_t rtc_logMagic;     // validez + geometría
 ```
+
+### `NOINIT` y no `DATA` — corregido en la revisión previa al flasheo del 1.3.0
+
+Según `esp_attr.h` del core, `RTC_DATA_ATTR` conserva el valor *"during a deep sleep / wake cycle"* mientras que `RTC_NOINIT_ATTR` lo conserva *"after restart or during a deep sleep / wake cycle"*. La primera versión usaba `RTC_DATA_ATTR`, y eso significaba que **un panic, un watchdog, una brownout o un comando `reboot` borraban la captura entera y dejaban el nivel en 0**.
+
+Lo grave no era perder los datos sino que era **silencioso**: la captura se desarmaba sola y la UI mostraba "Captura detenida" sin explicación. Y había una ironía — el `esp_reset_reason()` del evento de boot existe justamente para distinguir brownout de panic, pero esa entry nunca llegaba a escribirse, porque cuando `setup()` la intentaba el nivel ya era 0.
+
+El precio de `.rtc_noinit` es que arranca con basura en un power-on. Por eso `logging_begin()` valida, antes del primer `logging_write()`, una palabra mágica más la geometría (tamaño del ring y de la entry) más los invariantes del ring. La geometría cubre el caso de un firmware futuro que cambie `LOG_RING_ENTRIES`: el estado viejo dejaría de ser interpretable y se descarta. Los invariantes son defensa en profundidad — cuestan tres comparaciones y convierten una corrupción sutil en un reinicio limpio en vez de en un índice fuera de rango, que en RTC memory pisaría las variables de al lado.
+
+Efecto secundario: `.rtc_noinit` es `NOBITS`, así que los 6 KB del ring **dejaron de ocupar lugar en la imagen de flash**.
 
 `LOG_RING_ENTRIES` es **compile-time** — la RTC memory no se puede redimensionar en runtime. Default propuesto: **768 entries = 6 KB**, dejando margen sobre los 8176 B para el sistema y las otras variables RTC. Si se pasa, el linker falla con `region rtc_iram_seg overflowed`, así que el error se detecta al compilar y no en campo.
 
@@ -123,6 +135,18 @@ El nodo no puede timestampear. Cada entry lleva `boot` + `ms`, y el **backend** 
 3. Dentro de un ciclo, `ms` da el orden y la duración exactos.
 
 **Precisión honesta**: el timer de deep sleep corre sobre un oscilador RC interno con ±5%, así que interpolar 7 ciclos perdidos acumula ~±21 s de error. Para correlacionar logs sobra, y cada telemetría exitosa vuelve a anclar. Un RTC de hardware eliminaría todo esto — ver `aprendizajes_y_roadmap.md` → "Evolución candidata: nodo offline".
+
+### La frontera de reinicio
+
+Ahora que el ring sobrevive a un reinicio pero `rtc_bootCount` no —ese contador sigue en `.rtc.data`, que se recarga desde flash en cualquier arranque que no sea wake de deep sleep— **una misma captura puede contener ciclos numerados por dos series distintas del contador**.
+
+El evento de boot lleva `esp_reset_reason()`, así que la frontera es detectable: cualquier valor distinto de 8 (`ESP_RST_DEEPSLEEP`) marca dónde el contador volvió a empezar. El backend busca la última de esas entries y ancla sólo de ahí en adelante; lo anterior se entrega **con su número de ciclo crudo y sin hora**, más una nota que lo explica. El orden entre esos eventos sigue siendo correcto, porque el ring es cronológico.
+
+Sin esto, las entries previas al reinicio se fecharían contra un ancla que no les corresponde y darían horas inventadas — peor que no tener hora.
+
+### `ms` satura a los 65 s
+
+El campo son 16 bits, así que topea en 65535 ms. Un ciclo normal no llega ni en el peor caso (los tres reintentos de WiFi son 45 s, más MQTT y sensores da ~55 s), pero **una sesión de service mode dura minutos**: todas las entries posteriores a los 65 s colapsan al mismo valor. En la práctica afecta a una sola entry por sesión, la de salida — la de entrada se escribe enseguida y es exacta, y la duración real de la sesión viaja igual en su argumento `b`. Se acepta: dar más rango costaría la resolución de milisegundos dentro del ciclo, que es justo lo que hace útil el diagnóstico de conexión.
 
 ## Comandos
 

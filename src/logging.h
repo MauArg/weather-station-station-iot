@@ -14,6 +14,19 @@
 // El buffer vive en RTC memory porque el deep sleep borra la RAM normal. El
 // ESP32-C3 tiene 8176 B de RTC memory en total y nada más (memory.ld), así que
 // la ventana de captura se mide en horas, no en días.
+//
+// Concretamente vive en `.rtc_noinit` y NO en `.rtc.data`. La diferencia importa:
+// según esp_attr.h, RTC_DATA_ATTR conserva el valor "during a deep sleep / wake
+// cycle" mientras que RTC_NOINIT_ATTR lo conserva "after restart or during a deep
+// sleep / wake cycle". Con RTC_DATA_ATTR, un panic, un watchdog, una brownout o un
+// comando reboot borraban la captura entera y además dejaban el nivel en 0 — o sea
+// que la captura se desarmaba sola, en silencio, justo en los eventos que más
+// interesa investigar. Peor: la entry LOG_BOOT con esp_reset_reason(), que existe
+// para distinguir brownout de panic, no llegaba a escribirse nunca porque el nivel
+// ya era 0 cuando setup() la intentaba.
+//
+// El precio de `.rtc_noinit` es que arranca con basura en un power-on, así que el
+// estado se valida contra una palabra mágica y su geometría en logging_begin().
 
 // ─── Códigos ─────────────────────────────────────────────────────────────────
 // Fuente única: este X-macro genera el enum, la tabla de niveles y las
@@ -32,14 +45,15 @@
 // largas van en unidades de 100 ms: un ciclo que falla la conexión puede quemar
 // 45 s y 45000 no entra en int16.
 #define LOG_CODES(X) \
-    X(LOG_BOOT,           2, "boot - reset=%b") \
+    X(LOG_CAPTURE_START,  1, "captura iniciada - nivel %a, capacidad %b eventos") \
+    X(LOG_BOOT,           2, "boot - reset=%b (8=wake de deep sleep; cualquier otro reinicio el boot_count)") \
     X(LOG_WIFI_TRY,       3, "wifi intento %a (canal cacheado %b, 0=scan)") \
     X(LOG_WIFI_OK,        2, "wifi ok - intento %a, rssi %b dBm") \
     X(LOG_WIFI_FAIL,      1, "wifi timeout - intento %a, status %b") \
     X(LOG_WIFI_GIVEUP,    1, "wifi agoto los reintentos - %b x100ms perdidos") \
     X(LOG_MQTT_OK,        2, "mqtt conectado en %b ms") \
     X(LOG_MQTT_FAIL,      1, "mqtt rechazado - state %b") \
-    X(LOG_CMD_RX,         3, "comando retenido - tipo %a") \
+    X(LOG_CMD_RX,         3, "comando retenido - tipo %a (1=maintenance 2=reboot 3=config 4=calibrate 5=ping 6=log_on)") \
     X(LOG_PUBLISH_OK,     2, "telemetria publicada - %b B") \
     X(LOG_PUBLISH_FAIL,   1, "publish fallo - %b B, buffer corto?") \
     X(LOG_SERVICE_ENTER,  2, "entrando a service mode - %b s de presupuesto") \
@@ -73,6 +87,13 @@ static_assert(sizeof(LogEntry) == 8, "LogEntry define el formato de cable — "
                                      "si cambia de tamaño, el backend no puede decodificar");
 
 // ─── API ─────────────────────────────────────────────────────────────────────
+
+// Valida el estado que quedó en `.rtc_noinit` y lo reinicia si no es nuestro.
+//
+// TIENE que llamarse al principio de setup(), antes del primer logging_write():
+// en un power-on esa memoria arranca con basura, y un `rtc_logHead` basura
+// escribiría fuera del ring. Es idempotente y cuesta unas pocas comparaciones.
+void logging_begin();
 
 // Registra un evento. Barata y segura de llamar siempre: si el logging está
 // apagado o el código está por encima del nivel activo, retorna sin hacer nada.

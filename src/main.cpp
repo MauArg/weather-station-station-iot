@@ -45,9 +45,19 @@ void setup() {
     rtc_bootCount++;
     LOG_V("=== Boot #%u ===  Firmware: %s", rtc_bootCount, FIRMWARE_VERSION);
 
+    // Antes del primer logging_write(): el estado del logging vive en
+    // `.rtc_noinit`, que en un power-on arranca con basura.
+    logging_begin();
+
     // El motivo del reset distingue un wake normal de un panic, un watchdog o
     // una brownout. Es gratis y hoy no hay forma de saberlo en campo — la
     // brownout es una hipótesis viva dada la situación solar/batería.
+    //
+    // Además marca dónde se reinició rtc_bootCount: ese contador vive en
+    // `.rtc.data` y se borra en cualquier reset que no sea wake de deep sleep,
+    // mientras que el ring ahora sobrevive. O sea que una entry con reset != 8
+    // es la frontera entre dos vidas del contador, y el backend la necesita para
+    // no fechar mal lo que quedó del otro lado.
     logging_write(LOG_BOOT, 0, (int16_t)esp_reset_reason());
 
     Wire.begin(I2C_SDA, I2C_SCL);

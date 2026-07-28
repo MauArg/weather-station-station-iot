@@ -7,15 +7,26 @@
 extern uint32_t rtc_bootCount;
 
 // ─── Estado en RTC ────────────────────────────────────────────────────────────
-// La sección .rtc.data se recarga desde flash en cualquier boot que NO sea wake
-// de deep sleep, así que un reflash o un power-on dejan el logging apagado y el
-// ring vacío. Es el comportamiento que queremos: nadie hereda una captura vieja.
-static RTC_DATA_ATTR LogEntry rtc_logRing[LOG_RING_ENTRIES];
-static RTC_DATA_ATTR uint16_t rtc_logHead     = 0;
-static RTC_DATA_ATTR uint16_t rtc_logCount    = 0;
-static RTC_DATA_ATTR uint16_t rtc_logCapacity = 0;
-static RTC_DATA_ATTR uint32_t rtc_logDropped  = 0;
-static RTC_DATA_ATTR uint8_t  rtc_logLevel    = 0;
+// En `.rtc_noinit` y no en `.rtc.data`, para que la captura sobreviva a un panic,
+// un watchdog, una brownout o un reboot — ver la nota larga en logging.h. Sin
+// inicializadores a propósito: esta sección no se carga desde flash, así que un
+// valor inicial acá sería una mentira. logging_begin() la valida.
+static RTC_NOINIT_ATTR LogEntry rtc_logRing[LOG_RING_ENTRIES];
+static RTC_NOINIT_ATTR uint16_t rtc_logHead;
+static RTC_NOINIT_ATTR uint16_t rtc_logCount;
+static RTC_NOINIT_ATTR uint16_t rtc_logCapacity;
+static RTC_NOINIT_ATTR uint32_t rtc_logDropped;
+static RTC_NOINIT_ATTR uint8_t  rtc_logLevel;
+
+// Marca de validez del bloque de arriba, más la geometría con la que se escribió.
+// La mágica distingue "estado nuestro" de basura de power-on; la geometría atrapa
+// el caso de un firmware futuro que cambie el tamaño del ring o de la entry, donde
+// el estado viejo dejaría de ser interpretable.
+static RTC_NOINIT_ATTR uint32_t rtc_logMagic;
+static RTC_NOINIT_ATTR uint16_t rtc_logGeomEntries;
+static RTC_NOINIT_ATTR uint8_t  rtc_logGeomEntryLen;
+
+static constexpr uint32_t LOG_STATE_MAGIC = 0x4C4F4731u;  // "LOG1"
 
 // ─── Tablas generadas desde el X-macro ────────────────────────────────────────
 // Las tres salen de la misma definición en logging.h, así que agregar un código
@@ -37,6 +48,35 @@ static const char* const LOG_CODE_TEMPLATE[] = {
     LOG_CODES(X)
 #undef X
 };
+
+// ─── Arranque ─────────────────────────────────────────────────────────────────
+
+void logging_begin() {
+    // Los chequeos de invariantes van más allá de la mágica a propósito. La mágica
+    // sola ya distingue basura de power-on, pero cuestan tres comparaciones y
+    // convierten cualquier corrupción sutil en un reinicio limpio en vez de en un
+    // índice fuera de rango — que en RTC memory pisaría las variables de al lado.
+    const bool sane =
+        rtc_logMagic        == LOG_STATE_MAGIC &&
+        rtc_logGeomEntries  == LOG_RING_ENTRIES &&
+        rtc_logGeomEntryLen == sizeof(LogEntry) &&
+        rtc_logLevel        <= LOG_MAX_LEVEL &&
+        rtc_logCapacity     <= LOG_RING_ENTRIES &&
+        rtc_logCount        <= rtc_logCapacity &&
+        (rtc_logCapacity == 0 ? rtc_logHead == 0 : rtc_logHead < rtc_logCapacity);
+
+    if (sane) return;
+
+    rtc_logMagic        = LOG_STATE_MAGIC;
+    rtc_logGeomEntries  = LOG_RING_ENTRIES;
+    rtc_logGeomEntryLen = sizeof(LogEntry);
+    rtc_logLevel        = 0;
+    rtc_logCapacity     = 0;
+    rtc_logHead         = 0;
+    rtc_logCount        = 0;
+    rtc_logDropped      = 0;
+    LOG_V("logging: estado en RTC reiniciado (arranque en frio o geometria distinta)");
+}
 
 // ─── Escritura ────────────────────────────────────────────────────────────────
 
@@ -80,6 +120,11 @@ void logging_configure(uint8_t level, uint16_t entries) {
     // de niveles distintos y, si la capacidad cambió, dejaría el ring en un
     // estado donde head y count ya no son consistentes.
     logging_clear();
+
+    // Primera entry de toda captura, para que el volcado se explique solo: sin
+    // esto no hay forma de saber a qué nivel se capturó mirando el archivo, y el
+    // LOG_CMD_RX del propio comando que la inició queda del lado borrado.
+    if (level > 0) logging_write(LOG_CAPTURE_START, level, (int16_t)cap);
 
     LOG_V("logging: nivel %u, capacidad %u entries", level, cap);
 }
