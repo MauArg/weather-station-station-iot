@@ -81,7 +81,8 @@ Reconciliado con el estado real al 2026-07-11 (el snapshot original venía del p
 - ⏳ **Armado mecánico del Windicator** (anemómetro + veleta) — impreso en PLA, pendiente de armar y probar en campo.
 - ❓ **Montaje del panel solar** (placa de respaldo policarbonato/fenólico, sellado con silicona, bracket a 45°) — estado sin confirmar en esta sesión; el sistema ya reporta datos solares (INA219 solar) así que probablemente esté al menos parcialmente instalado.
 - ❓ **Mejora del Stevenson screen** (protección lateral contra sol, ventilación forzada) — estado sin confirmar. Se sabe que el wrap de aluminio en el mástil redujo contaminación térmica (2.04°C de mejora confirmada por análisis de datos) pero generó un efecto espejo que refleja radiación hacia el BMP180.
-- ❓ **Modos adaptativos de firmware** (día/noche por voltaje solar, tiers de energía por voltaje de batería) — `componentes_y_conexiones.md` ya documenta los umbrales de tiers como diseño vigente; no se re-verificó línea por línea contra el firmware actual en esta sesión.
+- ⏳ **Modos adaptativos de firmware** (día/noche por voltaje solar, tiers de energía por voltaje de batería) — **verificado 2026-07-29: no está implementado.** `src/battery.h` existe pero está vacío (0 bytes), `SLEEP_INTERVAL_SEC` es fijo, y `sensors_railsOn()` enciende los dos rails incondicionalmente (el TODO sigue ahí). Los umbrales de `componentes_y_conexiones.md` son diseño en papel. **Corrección de premisa**: los tiers no ahorran en deep sleep — GPIO7/GPIO8 no son RTC GPIOs en el ESP32-C3, así que al dormir quedan sin drive y el pull-down de 9,9 kΩ corta ambos rails solo. El ahorro real está en T3/T4, que cambian el intervalo de sleep.
+- ✅ **Bajo consumo — dos fixes en campo (2026-07-29)**: INA219 en power-down entre ciclos (`1.4.0`) y warmup del DHT22 en paralelo con la red (`1.5.0`). Ver `../STATUS.md` → "Power management".
 - ⏳ **Calibración de lluvia en Grafana** — `rain_wet_ref=0.3` sigue siendo un placeholder, falta dato real de lluvia intensa.
 - ❓ **Alcance de WiFi** — faltaban ~5m de cobertura; se subió la potencia de transmisión del TP-Link AX3000 a "High" como primer intento, resultado sin confirmar en esta sesión.
 
@@ -167,10 +168,26 @@ Es decir: **la red está lista a los ~314 ms y el nodo se queda 3 segundos más 
 - Los **800 ms de `waitForRetainedCommand`** figuraban como "~8% del tiempo despierto". Son **24%**.
 - Los **2 s de warmup del DHT22** son el **61%** de toda la ventana despierta.
 
-### Pendientes que salieron de esto (para otra sesión)
+### Pendientes que salieron de esto
 
-**1. Reintentar `mqtt.connect()` en el ciclo normal — el de mayor impacto.** Hoy hay un único intento en `connectMQTT()`: si da timeout, `main.cpp` va directo a `goToDeepSleep()` y el ciclo se pierde. Con WiFi ya arriba —la parte cara, y que nunca falla— y sólo ~800 ms gastados, un segundo intento cuesta a lo sumo otro socket timeout y salva el ciclo. Service mode ya tiene `SERVICE_MODE_MQTT_RETRIES`; el ciclo normal no tiene nada equivalente. Dado que el enlace oscila 9 dB solo, esto pasa de "mejora" a casi imprescindible.
+**1. Reintentar `mqtt.connect()` en el ciclo normal.** ⏳ Pendiente, para la sesión dedicada de MQTT. Hoy hay un único intento en `connectMQTT()`: si da timeout, `main.cpp` va directo a `goToDeepSleep()` y el ciclo se pierde. Con WiFi ya arriba —la parte cara, y que nunca falla— y sólo ~800 ms gastados, un segundo intento cuesta a lo sumo otro socket timeout y salva el ciclo. Service mode ya tiene `SERVICE_MODE_MQTT_RETRIES`; el ciclo normal no tiene nada equivalente.
 
-**2. Mover el rail-on del DHT22 al inicio de `setup()` — ~34% menos de tiempo despierto.** Hoy `sensors_init()` corre después de WiFi+MQTT, así que los 2 s de warmup se pagan en serie con la red asociada. Si Rail B se energiza al principio de `setup()`, para cuando la red está lista y pasó la espera del retenido ya transcurrieron ~1114 ms, con lo que sólo restarían ~886 ms de warmup: el despierto bajaría de 3,3 s a ~2,2 s. Como el WiFi domina el consumo durante toda esa ventana, el ahorro es de ese mismo orden. Esto confirma con números lo que ya predecía el análisis de power management pausado.
+> Ojo con dimensionar el impacto: la segunda captura mostró que el fallo de `connect()` explica ~1,5% de los ciclos, no el grueso de la pérdida. Ver "Segunda captura" abajo.
 
-**3. Revisar el presupuesto de reintentos de WiFi.** `WIFI_MAX_RETRIES` 3 × `WIFI_TIMEOUT_MS` 15 s da un peor caso de 45 s que está documentado como el costo de un ciclo fallido — pero **nunca ocurrió**: los ciclos fallidos costaron 5,7–6,2 s, y todos fallaron en MQTT, no en WiFi. El presupuesto está dimensionado para un modo de falla que no es el real. Antes de recortarlo conviene capturar una ventana con señal peor todavía, para no optimizar contra una muestra de una sola noche.
+**2. Mover el rail-on del DHT22 al inicio de `setup()`.** ✅ **Hecho — firmware `1.5.0`, 2026-07-29.** El despierto estimado baja de 3,3 s a ~2,2 s (~21 mAh/día con los 51,2 mA medidos). Detalle de implementación en `../STATUS.md` → "Power management". Efecto secundario importante: el warmup del DHT22 pasó a ser el término que fija el piso del despierto, lo que **anula** el pendiente de acortar `MQTT_RETAINED_WAIT_MS` — documentado en `src/config.h`.
+
+**3. Revisar el presupuesto de reintentos de WiFi.** ⏳ Pendiente. `WIFI_MAX_RETRIES` 3 × `WIFI_TIMEOUT_MS` 15 s da un peor caso de 45 s que está documentado como el costo de un ciclo fallido — pero **nunca ocurrió**: los ciclos fallidos costaron 5,2–6,2 s, y todos fallaron en MQTT, no en WiFi. El presupuesto está dimensionado para un modo de falla que no es el real. Antes de recortarlo conviene capturar una ventana con señal peor todavía, para no optimizar contra una muestra de una sola noche.
+
+---
+
+## Segunda captura de logs en campo (2026-07-29) — `LOG_PUBLISH_OK` no prueba entrega
+
+68 ciclos sobre `1.3.1`, nivel 3, 0 pisados, sin huecos de `boot_count`. Confirmó los tiempos de la primera captura casi exactamente (red lista a 322 ms, red→publish 3047 ms, despierto 3300 ms) y **corrigió la conclusión principal**.
+
+**El número real de pérdida es 42%, no 17%.** 67 ciclos registraron `LOG_PUBLISH_OK` y sólo 39 llegaron. Cruzado contra **dos consumidores independientes** —el backend Go por MQTT directo e InfluxDB vía N8N— que coinciden exactamente en qué llegó: dos caminos separados perdiendo los mismos mensajes ⇒ nunca llegaron al broker.
+
+**El aprendizaje transferible**: `PubSubClient::publish()` devuelve `true` cuando la escritura al socket tuvo éxito. En QoS 0 no hay ack posible, así que eso **no** es evidencia de entrega. El nodo cierra el socket en el mismo milisegundo y apaga la radio 200 ms después; si el segmento TCP necesita retransmisión (RTO del orden de 1-3 s) muere en silencio. Cualquier instrumentación futura que quiera afirmar "se publicó" necesita QoS 1 con PUBACK, o un consumidor que confirme.
+
+**No correlaciona con RSSI**: llegados vs. perdidos tienen distribuciones idénticas de señal, de tiempo de `connect()` y de tamaño de payload, y las rachas siguen una geométrica — pérdida independiente y sin memoria. Eso apunta a una condición sistemática y no a radiofrecuencia, con la salvedad de que la banda de esa noche fue angosta (-61 a -65 dBm).
+
+**Hipótesis principal (sin confirmar)**: el keepalive de 60 s deja la sesión vieja viva 90 s, más que el ciclo de ~63 s del nodo, así que cada reconexión fuerza un takeover por client-ID duplicado. El análisis completo, los comandos de verificación y las vías alternativas están en `../STATUS.md` → "Pérdida de telemetría".

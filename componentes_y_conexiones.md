@@ -8,7 +8,11 @@
 
 &#x20;
 
-\## Estado actual en campo (actualizado 2026-07-11)
+\## Estado actual en campo (actualizado 2026-07-29)
+
+&#x20;
+
+\*\*Firmware en campo: `1.5.0`.\*\* Historial reciente: `1.1.0` (DHT22) → `1.2.0` (service mode + fix del loop de reboot) → `1.3.0`/`1.3.1` (sistema de logs) → `1.4.0` (INA219 en power-down) → `1.5.0` (warmup del DHT22 en paralelo con la red). Ver `../STATUS.md` para el detalle de cada uno.
 
 &#x20;
 
@@ -30,8 +34,8 @@ Sistema desplegado y funcionando al aire libre, en el fondo del terreno (lote an
 
 &#x20;
 
-\*\*Reemplazado, pendiente de flashear:\*\*
-\- DHT11 → DHT22 — el DHT11 murió (falla crónica, venía fallando ya en proyectos anteriores a esta estación). \*\*2026-07-25:\*\* reemplazo físico completado — se desoldó el DHT11 del módulo Sunfounder y se soldó en su lugar el sensor DHT22 pelado, reutilizando el PCB del módulo (mismo pull-up y filtro ya incluidos ahí, mismo orden de pines VDD-DATA-NC-GND y mismo paso de 2.54mm que el DHT11, mismo conector JST y pin GPIO0 de la placa principal — sin cambios de cableado ni de PCB). Documentado con fotos antes/después del desoldado. \*\*Firmware ya reactivado y adaptado al DHT22\*\* (compila limpio, sin calibración de humedad — el DHT22 viene calibrado de fábrica); falta flashear el nodo y validar en campo. Los campos MQTT conservan el nombre histórico `dht11_*` a propósito, para no partir la serie en InfluxDB. Detalle en `../STATUS.md`.
+\*\*Reemplazado y en servicio:\*\*
+\- DHT11 → DHT22 — el DHT11 murió (falla crónica, venía fallando ya en proyectos anteriores a esta estación). \*\*2026-07-25:\*\* reemplazo físico completado — se desoldó el DHT11 del módulo Sunfounder y se soldó en su lugar el sensor DHT22 pelado, reutilizando el PCB del módulo (mismo pull-up y filtro ya incluidos ahí, mismo orden de pines VDD-DATA-NC-GND y mismo paso de 2.54mm que el DHT11, mismo conector JST y pin GPIO0 de la placa principal — sin cambios de cableado ni de PCB). Documentado con fotos antes/después del desoldado. \*\*Flasheado y validado en campo el 2026-07-25 — issue cerrado.\*\* Los campos MQTT conservan el nombre histórico `dht11_*` a propósito, para no partir la serie en InfluxDB. Detalle en `../STATUS.md`.
 
 &#x20;
 
@@ -315,7 +319,11 @@ Activo solo en tier 1. Se apaga en tier 2.
 
 &#x20;
 
-Tiers configurables via MQTT `config` sin reflash.
+> ⚠️ **Esto es diseño en papel, no está implementado** (verificado contra el firmware el 2026-07-29). `src/battery.h` existe pero está vacío, `SLEEP_INTERVAL_SEC` es fijo en 60 s, `sensors_railsOn()` enciende los dos rails incondicionalmente, y el comando `config` por MQTT se parsea pero es un stub. Los umbrales de la tabla son la intención, no el comportamiento actual.
+>
+> **Corrección de premisa, importante si se retoma**: los tiers **no ahorran nada durante el deep sleep**. GPIO7 y GPIO8 no son RTC GPIOs en el ESP32-C3 (sólo GPIO0–5 lo son), así que al dormir quedan sin drive y el pull-down de 9,9 kΩ de la base del BC337 corta los dos rails por su cuenta. Lo que los tiers recortan es la ventana despierta, donde los rails son ~2-3 mA contra los 51,2 mA medidos del sistema completo. El ahorro real de este diseño está en los tiers 3 y 4, que cambian el **intervalo de sleep** — no en el switching de rails.
+
+Tiers configurables via MQTT `config` sin reflash (pendiente: el comando existe pero no está implementado).
 
 &#x20;
 
@@ -587,7 +595,11 @@ Hembra en placa auxiliar (fila 1, cols 7–18).
 
 \- \*\*GPIO9 reservado\*\* — es el botón BOOT físico del ESP32-C3 SuperMini. No conectar.
 
-\- \*\*Módulos Sunfounder: desoldar LEDs\*\* antes de montar en PCB — BMP180 (ya hecho), DS18B20, DHT11, fotoresistor (verificar si tiene).
+\- \*\*Módulos Sunfounder: desoldar LEDs\*\* antes de montar en PCB — BMP180 (ya hecho), DS18B20, DHT11, fotoresistor (verificar si tiene). \*\*Los módulos INA219 no tienen LED de alimentación\*\* — verificado el 2026-07-29. Importaba porque cuelgan del bus 3V3, que sigue vivo durante el deep sleep: un LED de 1-3 mA por módulo habría consumido más que todo el resto del sistema junto, y no hay firmware que lo apague.
+
+\- \*\*Consumo activo medido: 51,2 mA\*\* (mediana del INA219 de sistema sobre 59 muestras de campo, 2026-07-29), con la ventana despierta en 3,3 s por ciclo antes del firmware `1.5.0`. La cifra de ~100 mA que circulaba por los documentos estaba 2× alta. El consumo en deep sleep sigue \*\*sin medir\*\* — el INA219 sólo muestrea con el nodo despierto.
+
+\- \*\*Los dos INA219 se apagan entre ciclos desde el firmware `1.4.0`\*\* (`sensors_sleepMonitors()`, modo power-down ~6 µA contra ~0,7-1 mA en conversión continua). Cuelgan del bus 3V3 siempre alimentado, así que antes convertían los ~57 s por ciclo en que nadie los lee. El power-down apaga el ADC del chip pero \*\*no abre el shunt\*\*, así que la carga solar por el CN3791 no se ve afectada.
 
 \- \*\*Rain sensor: prescindir del módulo Sunfounder completo\*\* — conectar placa sensora directamente con pull-up 4.95kΩ y filtro 100nF en placa auxiliar.
 
