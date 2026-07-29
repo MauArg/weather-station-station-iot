@@ -83,6 +83,19 @@ void setup() {
     }
 
     // ── Ciclo normal ──────────────────────────────────────────────────────────
+    // Lo antes posible dentro de este camino: el DHT22 pide ~2 s de estabilización
+    // tras recibir energía, y mientras el rail-on vivía dentro de sensors_init()
+    // —que corre después de WiFi, MQTT y la espera del retenido— esos 2 s se
+    // pagaban enteros al final del ciclo, con la radio asociada. Eran el 61% de
+    // los 3,3 s de ventana despierta medidos en campo el 2026-07-28. Acá el warmup
+    // transcurre en paralelo con trabajo que había que hacer igual.
+    //
+    // Va DESPUÉS del early-return de service mode a propósito: ese camino no toca
+    // los rails hoy, y una sesión puede durar hasta 60 min. Encenderlos ahí dejaría
+    // al sensor de lluvia con tensión continua sobre los electrodos durante toda la
+    // sesión, que es justo la corrosión electrolítica que la lectura pulsada evita.
+    sensors_railsOn();
+
     if (!connectWiFi()) { goToDeepSleep(); return; }
     if (!connectMQTT()) { goToDeepSleep(); return; }
 

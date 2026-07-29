@@ -39,7 +39,28 @@ struct SensorData {
     //   Requiere estrategia de conteo acumulado en RTC memory entre deep sleeps
 };
 
+// ─── Rails ────────────────────────────────────────────────────────────────────
+// Energiza Rail A y Rail B y arranca el reloj del warmup del DHT22.
+//
+// setup() la llama apenas arranca, antes de WiFi. El motivo es energético: el
+// DHT22 pide ~2 s de estabilización tras recibir energía, y mientras el rail
+// estuvo dentro de sensors_init() —que corre después de WiFi+MQTT y de la espera
+// del comando retenido— esos 2 s se pagaban íntegros al final del ciclo, con la
+// radio asociada consumiendo. Medido en campo el 2026-07-28: eran el 61% de los
+// 3,3 s de ventana despierta. Anticipando el rail-on, el warmup transcurre
+// mientras el nodo hace trabajo útil y el delay restante cae a unos cientos de ms.
+//
+// Es idempotente: sensors_init() la vuelve a llamar y no pasa nada. El timestamp
+// que vale es el de la primera llamada.
+//
+// No cambia el tiempo total que los rails quedan energizados —el ciclo se acorta
+// en la misma medida en que el encendido se adelanta— así que la exposición del
+// sensor de lluvia a tensión continua, que es lo que la lectura pulsada busca
+// minimizar, queda igual que antes.
+void sensors_railsOn();
+
 // Inicializa todos los sensores. Retorna false si alguno falla (no crítico).
+// Llama a sensors_railsOn() por las suyas si setup() todavía no lo hizo.
 bool sensors_init();
 
 // Lee todos los sensores. Campos fallidos quedan como NAN.

@@ -26,6 +26,13 @@ static bool _solar_ok   = false;
 static bool _system_ok  = false;
 static bool _ds18b20_ok = false;
 
+// ─── Rails ────────────────────────────────────────────────────────────────────
+// Momento en que los rails entregaron energía, para anclar el warmup del DHT22.
+// En .bss, así que arrancan en cero/false en cada boot — incluido el wake de deep
+// sleep, donde sólo sobrevive la RTC memory.
+static uint32_t _rail_on_ms = 0;
+static bool     _rails_on   = false;
+
 // =============================================================================
 //  Monitor de batería para service mode
 // =============================================================================
@@ -56,13 +63,26 @@ void sensors_sleepMonitors() {
 //  Inicialización
 // =============================================================================
 
-bool sensors_init() {
-    // ── Rails: siempre activos (primera iteración) ────────────────────────────
+// Idempotente a propósito: setup() la llama apenas arranca, para que el warmup
+// del DHT22 corra en paralelo con WiFi+MQTT en vez de en serie. Pero sensors_init()
+// la vuelve a llamar, así que sigue siendo correcta aunque alguien agregue un
+// camino que llegue al init sin pasar por setup(). El timestamp es el de la
+// primera llamada — que es el momento en que el rail realmente entregó energía.
+void sensors_railsOn() {
+    if (_rails_on) return;
+
     // TODO [bajo consumo]: apagar Rail B en Tier 2 y Rail A en Tier 3
     //   según umbral de batería — ver battery.h
     pinMode(PIN_RAIL_A, OUTPUT); digitalWrite(PIN_RAIL_A, HIGH);
     pinMode(PIN_RAIL_B, OUTPUT); digitalWrite(PIN_RAIL_B, HIGH);
-    const uint32_t rail_on_ms = millis();   // referencia del warmup del DHT22
+
+    _rail_on_ms = millis();   // referencia del warmup del DHT22
+    _rails_on   = true;
+}
+
+bool sensors_init() {
+    // No-op si setup() ya los encendió, que es el caso normal.
+    sensors_railsOn();
 
     // ── DS18B20 ───────────────────────────────────────────────────────────────
     _ds18b20.begin();
@@ -84,12 +104,13 @@ bool sensors_init() {
     _system_ok = ina219_system.begin();
 
     // ── DHT22 warmup ──────────────────────────────────────────────────────────
-    // Se mide desde que Rail B entrega energía, NO desde el boot: sensors_init()
-    // corre después de WiFi+MQTT (ver main.cpp), así que acá millis() ya vale
-    // 2-5s y anclarlo al boot dejaba el warmup efectivo en cero — el sensor se
-    // leía apenas energizado. Va al final del init para que el tiempo del bus
-    // I2C y del DS18B20 cuente como parte del warmup en vez de sumarse.
-    uint32_t elapsed = millis() - rail_on_ms;
+    // Se mide desde que Rail B entrega energía, NO desde el boot. Con el rail-on
+    // movido al arranque de setup() (1.5.0), para cuando se llega acá ya pasaron
+    // WiFi, MQTT y la espera del retenido, así que el grueso del warmup ya
+    // transcurrió y este delay queda en unos pocos cientos de ms en vez de 2 s
+    // enteros. Va al final del init para que el tiempo del bus I2C y del DS18B20
+    // también cuente como parte del warmup en vez de sumarse.
+    uint32_t elapsed = millis() - _rail_on_ms;
     if (elapsed < DHT_WARMUP_MS) {
         delay(DHT_WARMUP_MS - elapsed);
     }
