@@ -125,6 +125,11 @@ bool connectWiFi() {
     const uint32_t wifiStartMs = millis();
     WiFi.mode(WIFI_STA);
 
+    // Antes de WiFi.begin(): el modo de power save se aplica a la asociación que
+    // viene, y con el default (modem sleep) la asociación se muere a mitad del
+    // ciclo. Ver WIFI_POWER_SAVE en config.h para la medición que llevó acá.
+    WiFi.setSleep(WIFI_POWER_SAVE ? true : false);
+
     // IP estática
     if (!WiFi.config(WIFI_STATIC_IP, WIFI_GATEWAY, WIFI_SUBNET, WIFI_DNS)) {
         LOG_E("Fallo al configurar IP estática");

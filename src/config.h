@@ -16,6 +16,29 @@
 #define WIFI_TIMEOUT_MS     15000
 #define WIFI_MAX_RETRIES    3
 
+// ─── Power save de WiFi ───────────────────────────────────────────────────────
+// El default del Arduino-ESP32 es modem sleep (`WIFI_PS_MIN_MODEM`): la radio se
+// apaga entre beacons DTIM y despierta a recibir.
+//
+// Medido el 2026-07-29, y es el motivo por el que esto es un `#define` y no el
+// default: **la asociación WiFi se muere a un tiempo variable después de
+// asociarse**, y ahí se explica toda la pérdida de telemetría. Sondeando el nodo
+// con ICMP cada 150 ms, la ventana en que responde predice exactamente hasta
+// dónde llega el ciclo:
+//
+//     0-180 ms alcanzable   -> ni siquiera conecta al broker
+//   470-1100 ms alcanzable  -> conecta, no llega a publicar (el publish va a 2,3 s)
+//  2150-2700 ms alcanzable  -> publica y cierra limpio
+//
+// Dos indicios apuntan al power save: los pings vuelven en 33-74 ms dentro de una
+// LAN (es el AP guardando el paquete hasta el DTIM del nodo), y agregar tráfico
+// de bajada durante el sleep hace que la asociación muera ANTES, no después.
+//
+// Apagarlo no es gratis: son ~+22 mAh/día sobre un presupuesto activo de ~47, así
+// que si resuelve la pérdida hay que decidir el tradeoff con el dato en la mano —
+// y se puede medir solo, porque el nodo publica `system_mA` en cada telemetría.
+#define WIFI_POWER_SAVE     0
+
 // ─── MQTT ─────────────────────────────────────────────────────────────────────
 #define MQTT_BROKER         "192.168.18.250"   // IP de la Raspberry Pi
 #define MQTT_PORT           1883
@@ -54,7 +77,7 @@
 //
 // Poner en 0 para volver al camino de red sin perturbar, que es el baseline
 // contra el que se comparan las mediciones.
-#define UPLINK_BEACON       1
+#define UPLINK_BEACON       0
 
 // Tiempo de espera para recibir el mensaje retenido del broker
 #define MQTT_RETAINED_WAIT_MS  800
