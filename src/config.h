@@ -31,6 +31,14 @@
 // Tiempo de espera para recibir el mensaje retenido del broker
 #define MQTT_RETAINED_WAIT_MS  800
 
+// Tamaño del buffer de PubSubClient, y el payload útil que queda para el topic de
+// telemetría una vez descontados el header fijo (5), el largo (2) y el topic.
+// Derivarlo en vez de escribir 741 a mano evita que se desincronice si cambia el
+// buffer o el nombre del topic — y `publish()` descarta el mensaje entero, en
+// silencio, cuando no entra.
+#define MQTT_BUFFER_BYTES      768
+#define MQTT_TELEMETRY_BUDGET  (MQTT_BUFFER_BYTES - 5 - 2 - (int)(sizeof(TOPIC_TELEMETRY) - 1))
+
 // ─── I2C ──────────────────────────────────────────────────────────────────────
 #define I2C_SDA             6
 #define I2C_SCL             5

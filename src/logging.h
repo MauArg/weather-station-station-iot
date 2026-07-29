@@ -55,7 +55,7 @@
     X(LOG_MQTT_FAIL,      1, "mqtt rechazado - state %b") \
     X(LOG_CMD_RX,         3, "comando retenido - tipo %a (1=maintenance 2=reboot 3=config 4=calibrate 5=ping 6=log_on)") \
     X(LOG_PUBLISH_OK,     2, "telemetria publicada - %b B") \
-    X(LOG_PUBLISH_FAIL,   1, "publish fallo - %b B, buffer corto?") \
+    X(LOG_PUBLISH_FAIL,   1, "publish fallo - %b B, causa %a (1=no entra en el buffer, 2=conexion caida)") \
     X(LOG_SERVICE_ENTER,  2, "entrando a service mode - %b s de presupuesto") \
     X(LOG_SERVICE_EXIT,   2, "saliendo de service mode - motivo %a (1=timeout 2=servidor 3=mqtt caido), %b s") \
     X(LOG_SLEEP,          2, "durmiendo - %b x100ms despierto")

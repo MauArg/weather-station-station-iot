@@ -163,7 +163,7 @@ bool connectMQTT() {
     // bajo cero (más dígitos) y los 3 campos del DHT22. PubSubClient descarta el
     // publish entero y en silencio si no entra (buffer = header 5 + 2 + topic 20
     // + payload). 768 deja margen para el subsistema de viento pendiente.
-    mqtt.setBufferSize(768);
+    mqtt.setBufferSize(MQTT_BUFFER_BYTES);
 
     // Keepalive: el default de PubSubClient es 15 s (PubSubClient.h). Con ese
     // valor, un solo PINGREQ/PINGRESP perdido tumba la conexión — en un enlace
@@ -395,12 +395,20 @@ void publishTelemetry() {
         doc["log_count"]  = logging_count();
     }
 
-    char buf[768];
+    char buf[MQTT_BUFFER_BYTES];
     size_t len = serializeJson(doc, buf);
     if (!mqtt.publish(TOPIC_TELEMETRY, buf, false)) {
-        // Falla silenciosa si el payload excede el buffer — hacerla visible.
-        LOG_E("Publish de telemetría falló (%u B) — ¿buffer MQTT corto?", (unsigned)len);
-        logging_write(LOG_PUBLISH_FAIL, 0, (int16_t)len);
+        // publish() devuelve false por dos motivos muy distintos: el payload no
+        // entra en el buffer, o la escritura al socket falló. Distinguirlos acá,
+        // que es donde se conoce el presupuesto, evita que el log culpe al buffer
+        // de una conexión caída — que fue exactamente lo que pasó en la primera
+        // captura de campo (2026-07-28): 505 B contra 741 disponibles, reportados
+        // como "¿buffer corto?".
+        const bool toobig = (int)len > MQTT_TELEMETRY_BUDGET;
+        LOG_E("Publish de telemetría falló (%u B de %d útiles) — %s",
+              (unsigned)len, MQTT_TELEMETRY_BUDGET,
+              toobig ? "no entra en el buffer" : "conexión caída");
+        logging_write(LOG_PUBLISH_FAIL, toobig ? 1 : 2, (int16_t)len);
     } else {
         LOG_V("Telemetría publicada (%u B)", (unsigned)len);
         logging_write(LOG_PUBLISH_OK, 0, (int16_t)len);

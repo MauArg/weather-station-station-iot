@@ -95,7 +95,7 @@ Es un cambio de categoría, no una feature: el nodo pasa de "sensor conectado" a
 
 ### El premio real es energético, no de conectividad
 
-En el nodo actual el WiFi domina todo: ~10 s despierto a 80-140 mA por ciclo. Un ciclo sin red —despertar, leer sensores, escribir a almacenamiento local, dormir— es del orden de 1 s a ~20 mA. Son casi dos órdenes de magnitud por ciclo. Eso es lo que habilita el "ultra low power" que mencionaba la idea: meses de autonomía, o el mismo tiempo con un panel mucho más chico. La descarga ocasional por BLE se paga una vez cada muchos días, no 1440 veces por día.
+En el nodo actual el WiFi domina todo: **3,3 s despierto** a 80-140 mA por ciclo (medido en campo el 2026-07-28; la cifra de "~10 s" que figuraba acá estaba mal por 3×). Un ciclo sin red —despertar, leer sensores, escribir a almacenamiento local, dormir— es del orden de 1 s a ~20 mA, y encima se ahorra la espera del comando retenido. Es más de un orden de magnitud de carga por ciclo, no los dos que decía la estimación original. Eso es lo que habilita el "ultra low power" que mencionaba la idea: meses de autonomía, o el mismo tiempo con un panel mucho más chico. La descarga ocasional por BLE se paga una vez cada muchos días, no 1440 veces por día.
 
 ### RTC con pila propia — encaja en el nodo actual
 
@@ -122,3 +122,55 @@ Números para dimensionar: 6 meses a una muestra cada 10 min son ~26.000 muestra
 ### Lo que habría que resolver del lado del backend
 
 El pipeline actual asume datos **en vivo**. Ingerir un lote de muestras de hace seis meses es un camino distinto: hay que aceptar backfill histórico, deduplicar contra lo que ya se importó, y decidir qué pasa si el reloj del nodo derivó o se reinició. No es difícil, pero es trabajo que hoy no existe.
+
+---
+
+## Primera captura de logs en campo (2026-07-28) — el ~17% de ciclos perdidos, resuelto
+
+Primera corrida real del sistema de logs contra el nodo con firmware `1.3.0`: **177 eventos, 30 ciclos, nivel 3 (verboso), 0 eventos pisados**. Esto cierra la pregunta que motivó todo el sistema. Los números de acá salen de esa captura; no hace falta re-derivarlos.
+
+### El fallo no es WiFi
+
+**WiFi asoció en el primer intento las 30 veces**, incluso con la señal degradada: 30 `LOG_WIFI_TRY`, 30 `LOG_WIFI_OK`, **cero** `LOG_WIFI_FAIL` y cero `LOG_WIFI_GIVEUP`. La hipótesis anterior —"el nodo no se asocia por señal marginal"— queda descartada como mecanismo.
+
+Lo que falla es la capa **TCP/MQTT**, y correlaciona fuerte con el RSSI:
+
+| Ventana | RSSI | Ciclos que intentaron publicar | Fallos | `mqtt.connect()` |
+|---|---|---|---|---|
+| Degradada | **-73 dBm** | 5 | **3 (60%)** | 399 / 412 / 550 ms, más 2 timeouts |
+| Normal | -63 a -66 dBm | 21 | **0** | 32–69 ms |
+
+El código de error es `state -4` = `MQTT_CONNECTION_TIMEOUT` (`PubSubClient.h:45`). El mecanismo: el handshake MQTT pasa de **~40 ms a 2400–3200 ms** cuando la señal se degrada —un factor de 60×— y a veces cruza el socket timeout de 5 s, perdiendo el ciclo entero. Tasa global en esta captura: 3 de 26 = 11,5%, consistente con el ~17% histórico.
+
+El `LOG_PUBLISH_FAIL` que apareció decía "¿buffer corto?" con **505 B contra 741 disponibles**: fue una conexión caída a mitad del publish. Ya corregido — la entry ahora distingue las dos causas en su argumento `a`.
+
+### El enlace oscila ~9 dB solo por el ambiente
+
+Confirmado por Mau: entre la ventana degradada y las normales **no hubo ningún cambio de configuración**. La diferencia fue ambiental — una persona moviéndose, una puerta abriéndose. Son 9 dB, casi un orden de magnitud de potencia.
+
+El router (TP-Link Archer) **ya está con la potencia de transmisión al máximo**, y ese fue un parche necesario: en "medium" el nodo directamente no lograba conectarse. O sea que no queda margen de configuración del lado del AP, y la condición marginal no es un caso raro sino el régimen normal de operación.
+
+### El tiempo despierto es 3,3 s, no ~10 s
+
+La cifra de "~10 s despierto" que circulaba por los documentos **estaba mal por 3×**. Mediana sobre 20 ciclos sanos:
+
+| Tramo | Mediana | % del despierto |
+|---|---|---|
+| boot → primer intento de WiFi | 73 ms | 2% |
+| WiFi asociado | 201 ms | 6% |
+| MQTT conectado | 40 ms | 1% |
+| **red lista → publish** | **3048 ms** | **92%** |
+| **Total** | **3300 ms** | |
+
+Es decir: **la red está lista a los ~314 ms y el nodo se queda 3 segundos más con el WiFi asociado y consumiendo**, esperando el comando retenido y el warmup del DHT22. Eso invierte el peso de dos cosas que estaban anotadas con otras proporciones:
+
+- Los **800 ms de `waitForRetainedCommand`** figuraban como "~8% del tiempo despierto". Son **24%**.
+- Los **2 s de warmup del DHT22** son el **61%** de toda la ventana despierta.
+
+### Pendientes que salieron de esto (para otra sesión)
+
+**1. Reintentar `mqtt.connect()` en el ciclo normal — el de mayor impacto.** Hoy hay un único intento en `connectMQTT()`: si da timeout, `main.cpp` va directo a `goToDeepSleep()` y el ciclo se pierde. Con WiFi ya arriba —la parte cara, y que nunca falla— y sólo ~800 ms gastados, un segundo intento cuesta a lo sumo otro socket timeout y salva el ciclo. Service mode ya tiene `SERVICE_MODE_MQTT_RETRIES`; el ciclo normal no tiene nada equivalente. Dado que el enlace oscila 9 dB solo, esto pasa de "mejora" a casi imprescindible.
+
+**2. Mover el rail-on del DHT22 al inicio de `setup()` — ~34% menos de tiempo despierto.** Hoy `sensors_init()` corre después de WiFi+MQTT, así que los 2 s de warmup se pagan en serie con la red asociada. Si Rail B se energiza al principio de `setup()`, para cuando la red está lista y pasó la espera del retenido ya transcurrieron ~1114 ms, con lo que sólo restarían ~886 ms de warmup: el despierto bajaría de 3,3 s a ~2,2 s. Como el WiFi domina el consumo durante toda esa ventana, el ahorro es de ese mismo orden. Esto confirma con números lo que ya predecía el análisis de power management pausado.
+
+**3. Revisar el presupuesto de reintentos de WiFi.** `WIFI_MAX_RETRIES` 3 × `WIFI_TIMEOUT_MS` 15 s da un peor caso de 45 s que está documentado como el costo de un ciclo fallido — pero **nunca ocurrió**: los ciclos fallidos costaron 5,7–6,2 s, y todos fallaron en MQTT, no en WiFi. El presupuesto está dimensionado para un modo de falla que no es el real. Antes de recortarlo conviene capturar una ventana con señal peor todavía, para no optimizar contra una muestra de una sola noche.

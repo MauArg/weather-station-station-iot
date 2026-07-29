@@ -40,7 +40,7 @@ necesito debuggear algo
 | No hay RTC de hardware ni NTP, y `millis()` se reinicia en cada ciclo | No se puede timestampear en el nodo; lo reconstruye el backend |
 | El topic `cmd` es **retenido y de slot único** | El comando se consume y se limpia en el acto; el estado vive en RTC |
 | Buffer MQTT de 768 B | El dump va **paginado** |
-| El nodo está despierto ~10 s por ciclo y no escucha | El dump ocurre en **service mode** |
+| El nodo está despierto ~3,3 s por ciclo y no escucha | El dump ocurre en **service mode** |
 
 ## Formato de entry — 8 bytes
 
@@ -162,7 +162,7 @@ Sin esto, las entries previas al reinicio se fecharían contra un ancla que no l
 
 ### `ms` satura a los 65 s
 
-El campo son 16 bits, así que topea en 65535 ms. Un ciclo normal no llega ni en el peor caso (los tres reintentos de WiFi son 45 s, más MQTT y sensores da ~55 s), pero **una sesión de service mode dura minutos**: todas las entries posteriores a los 65 s colapsan al mismo valor. En la práctica afecta a una sola entry por sesión, la de salida — la de entrada se escribe enseguida y es exacta, y la duración real de la sesión viaja igual en su argumento `b`. Se acepta: dar más rango costaría la resolución de milisegundos dentro del ciclo, que es justo lo que hace útil el diagnóstico de conexión.
+El campo son 16 bits, así que topea en 65535 ms. Un ciclo normal no llega ni en el peor caso teórico (los tres reintentos de WiFi son 45 s, más MQTT y sensores da ~55 s), y en la práctica queda muy lejos: **medido en campo el 2026-07-28, un ciclo sano dura 3,3 s y uno fallido 5,7–6,2 s**. Pero **una sesión de service mode dura minutos**: todas las entries posteriores a los 65 s colapsan al mismo valor. En la práctica afecta a una sola entry por sesión, la de salida — la de entrada se escribe enseguida y es exacta, y la duración real de la sesión viaja igual en su argumento `b`. Se acepta: dar más rango costaría la resolución de milisegundos dentro del ciclo, que es justo lo que hace útil el diagnóstico de conexión.
 
 ## Comandos
 
