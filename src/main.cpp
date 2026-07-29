@@ -425,15 +425,18 @@ void goToDeepSleep() {
     // los fallos de conexión con el consumo (10 s de un ciclo sano contra los
     // 45 s de uno que agota los reintentos de WiFi).
     logging_write(LOG_SLEEP, 0, (int16_t)(millis() / 100));
-
-    // Después del LOG_SLEEP a propósito: así el tiempo despierto que se registra
-    // no incluye esta transacción I2C y sigue siendo comparable contra las
-    // capturas previas al cambio.
-    sensors_sleepMonitors();
-
     mqtt.disconnect();
     delay(200);
     WiFi.disconnect(true);
     delay(100);
+
+    // Al final del teardown a propósito, y no entre el publish y el disconnect:
+    // así el camino de red queda idéntico al de 1.3.1 y la medición del 42% de
+    // payloads perdidos sigue siendo comparable contra ese baseline. De paso saca
+    // el I2C del camino crítico — powerSave() hace read-modify-write sobre dos
+    // chips y TwoWire tiene 50 ms de timeout por transacción, así que un bus
+    // trabado (hay historial en este proyecto) metería hasta 200 ms justo ahí.
+    sensors_sleepMonitors();
+
     esp_deep_sleep((uint64_t)SLEEP_INTERVAL_SEC * 1000000ULL);
 }
