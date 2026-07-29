@@ -436,5 +436,8 @@ void serviceMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSe
 
     // Volver al ciclo normal
     LOG_V("Entrando en deep sleep desde service_mode_exit");
+    // Este camino no pasa por goToDeepSleep(), así que apaga los INA219 por su
+    // cuenta — si no, una salida de service mode los dejaría convirtiendo.
+    sensors_sleepMonitors();
     esp_deep_sleep((uint64_t)SLEEP_INTERVAL_SEC * 1000000ULL);
 }

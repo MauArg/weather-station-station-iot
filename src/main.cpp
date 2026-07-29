@@ -425,6 +425,12 @@ void goToDeepSleep() {
     // los fallos de conexión con el consumo (10 s de un ciclo sano contra los
     // 45 s de uno que agota los reintentos de WiFi).
     logging_write(LOG_SLEEP, 0, (int16_t)(millis() / 100));
+
+    // Después del LOG_SLEEP a propósito: así el tiempo despierto que se registra
+    // no incluye esta transacción I2C y sigue siendo comparable contra las
+    // capturas previas al cambio.
+    sensors_sleepMonitors();
+
     mqtt.disconnect();
     delay(200);
     WiFi.disconnect(true);

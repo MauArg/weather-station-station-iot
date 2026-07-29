@@ -45,6 +45,13 @@ float sensors_readSystemVoltage() {
     return ina219_system.getBusVoltage_V();
 }
 
+// Ver sensors.h para el porqué del guard: powerSave() no chequea i2c_dev, y hay
+// caminos que llegan a dormir sin haber inicializado nada.
+void sensors_sleepMonitors() {
+    if (_solar_ok)  ina219_solar.powerSave(true);
+    if (_system_ok) ina219_system.powerSave(true);
+}
+
 // =============================================================================
 //  Inicialización
 // =============================================================================

@@ -61,3 +61,20 @@ bool  sensors_initSystemMonitor();
 
 // Voltaje del bus del INA219 de sistema (batería). NAN si no inicializó.
 float sensors_readSystemVoltage();
+
+// ─── Bajo consumo ─────────────────────────────────────────────────────────────
+// Deja los dos INA219 en power-down antes de dormir: ~6 µA cada uno contra los
+// ~0,7-1 mA de la conversión continua (datasheet INA219, tabla de consumo).
+// Cuelgan del bus 3V3, que el regulador del ESP32 sigue alimentando durante el
+// deep sleep, así que sin esto siguen convirtiendo los ~57 s del ciclo en que
+// nadie los lee. Es el consumo dominante fuera de la ventana despierta.
+//
+// Sólo actúa sobre los que llegaron a inicializar: Adafruit_INA219::powerSave()
+// usa i2c_dev sin chequear null, y el camino de fallo de red entra a deep sleep
+// sin pasar por sensors_init() — o sea que sin el guard crashearía justo en los
+// ciclos que fallan la conexión.
+//
+// No hace falta despertarlos: begin() reescribe el registro de configuración con
+// el modo continuo, y la primera conversión tarda ~532 µs, muy por debajo del
+// tiempo que pasa hasta sensors_read().
+void sensors_sleepMonitors();
