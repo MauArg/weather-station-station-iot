@@ -1,6 +1,7 @@
 # Credenciales — nunca versionar
 .env
 mosquitto/config/passwd
+secrets.ini
 
 # Datos persistidos por los contenedores
 mosquitto/data/

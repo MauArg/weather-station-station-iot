@@ -11,8 +11,17 @@
 #endif
 
 // ─── Red ──────────────────────────────────────────────────────────────────────
-#define WIFI_SSID           "Ire y Mau"
-#define WIFI_PASSWORD       "Lady-350!"
+// Credenciales: NO van acá. Llegan por -D desde `secrets.ini`, que está en
+// .gitignore — ver `secrets.ini.example` para la plantilla y las dos advertencias
+// de escapado. Este archivo se versiona y el repo vive en GitHub.
+//
+// El #error es a propósito y no es paranoia: sin él, un build al que le falta el
+// secrets.ini compilaría igual con las macros vacías y flashearía un nodo que no
+// puede asociarse a nada. En una caja estanca en el fondo, eso se arregla
+// abriendo la caja y enchufando USB, porque tampoco habría OTA.
+#if !defined(WIFI_SSID) || !defined(WIFI_PASSWORD) || !defined(MQTT_USER)  || !defined(MQTT_PASSWORD) || !defined(OTA_PASSWORD)
+  #error "Faltan credenciales: copia secrets.ini.example a secrets.ini y completalo."
+#endif
 #define WIFI_TIMEOUT_MS     15000
 #define WIFI_MAX_RETRIES    3
 
@@ -42,8 +51,6 @@
 // ─── MQTT ─────────────────────────────────────────────────────────────────────
 #define MQTT_BROKER         "192.168.18.250"   // IP de la Raspberry Pi
 #define MQTT_PORT           1883
-#define MQTT_USER           "weather_station_iot"
-#define MQTT_PASSWORD       "aXdC7nE2gLEe"
 #define MQTT_CLIENT_ID      "weather-station-01"
 
 // Topics
@@ -131,7 +138,6 @@
 
 // ─── OTA / Service mode ───────────────────────────────────────────────────────
 #define OTA_HOSTNAME        "weather-station-01"
-#define OTA_PASSWORD        "rnLm43G7wcYr"            // mismo que upload_flags en platformio.ini
 
 #define SERVICE_MODE_DEFAULT_TIMEOUT_MIN  15
 #define SERVICE_MODE_MAX_TIMEOUT_MIN      60          // techo absoluto ignorando lo que pida el servidor
