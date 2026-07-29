@@ -33,6 +33,7 @@ void  publishTelemetry();
 void  handleCommand(const Command& cmd);
 void  clearRetainedCommand();
 void  goToDeepSleep();
+void  publishUplinkBeacon(const char* mark);
 
 // ═════════════════════════════════════════════════════════════════════════════
 void setup() {
@@ -101,6 +102,10 @@ void setup() {
 
     // Leer comando retenido del broker (esperar hasta MQTT_RETAINED_WAIT_MS)
     Command cmd = waitForRetainedCommand();
+
+    // Baliza: último instante conocido antes de la lectura de sensores, que es el
+    // tramo más largo del ciclo sin tráfico de red. Ver UPLINK_BEACON en config.h.
+    publishUplinkBeacon("pre_sensors");
 
     // Inicializar sensores solo en ciclo normal (no en service mode ni reboot)
     sensors_init();
@@ -366,6 +371,29 @@ void clearRetainedCommand() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Baliza de diagnóstico del uplink
+// ═════════════════════════════════════════════════════════════════════════════
+// Marcador chico en un topic propio, con el boot_count adentro: eso es lo que
+// permite cruzarlo contra la telemetría que falta y decir "el ciclo 208 llegó
+// hasta acá". Sin retain — no tiene sentido que sobreviva al ciclo, y el topic
+// retenido de comandos es de slot único.
+//
+// No se chequea el retorno a propósito: en QoS 0 no significa entrega (es
+// justamente lo que estamos midiendo) y un fallo local se vería igual en el
+// LOG_PUBLISH_FAIL de la telemetría, dos líneas después.
+void publishUplinkBeacon(const char* mark) {
+#if UPLINK_BEACON
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"boot\":%u,\"mark\":\"%s\",\"ms\":%lu}",
+             (unsigned)rtc_bootCount, mark, (unsigned long)millis());
+    mqtt.publish(TOPIC_DEBUG, buf, false);
+    mqtt.loop();
+#else
+    (void)mark;
+#endif
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Telemetría
 // ═════════════════════════════════════════════════════════════════════════════
 void publishTelemetry() {
@@ -416,6 +444,13 @@ void publishTelemetry() {
 
     char buf[MQTT_BUFFER_BYTES];
     size_t len = serializeJson(doc, buf);
+
+    // Baliza inmediatamente antes del publish grande. Si esta llega y la
+    // telemetría no, el enlace estaba vivo 10 ms antes y lo que no pasa es el
+    // frame de 503 B — que es una conclusión muy distinta a que se caiga el
+    // enlace. Ver UPLINK_BEACON en config.h.
+    publishUplinkBeacon("pre_publish");
+
     if (!mqtt.publish(TOPIC_TELEMETRY, buf, false)) {
         // publish() devuelve false por dos motivos muy distintos: el payload no
         // entra en el buffer, o la escritura al socket falló. Distinguirlos acá,
