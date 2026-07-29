@@ -31,6 +31,33 @@
 // Tiempo de espera para recibir el mensaje retenido del broker
 #define MQTT_RETAINED_WAIT_MS  800
 
+// ─── Keepalive de MQTT ────────────────────────────────────────────────────────
+// Dos valores, porque los dos caminos del firmware tienen necesidades OPUESTAS y
+// un único número no puede servir a los dos.
+//
+// El keepalive no gobierna sólo el PINGREQ del cliente: define también cuánto
+// tarda el broker en dar por muerta una sesión, que por spec es 1,5 × keepalive.
+// Y con un client-ID fijo, una sesión vieja que sigue viva cuando el nodo vuelve
+// a conectar fuerza un takeover por duplicado en cada ciclo.
+//
+// CICLO NORMAL — corto. El nodo vive ~2,2 s, así que su propio PINGREQ nunca
+// llega a dispararse y el valor es gratis del lado del cliente. Lo que se compra
+// con 30 s es que el broker expire la sesión a los 45 s, por debajo del ciclo de
+// ~63 s (57 s en el peor caso del ±5% del timer de deep sleep): cada wake
+// encuentra el client-ID libre y no hay takeover. Con 60 s la expiración caía a
+// los 90 s y la sesión vieja seguía viva en TODAS las reconexiones — es la
+// hipótesis principal del 38-42% de payloads perdidos (ver ../STATUS.md).
+//
+// SERVICE MODE — largo. Ahí el nodo vive minutos y un ArduinoOTA.handle() puede
+// bloquear decenas de segundos sin mandar nada, así que el margen del broker es
+// lo único que sostiene la sesión; con 15 s un solo PINGREQ perdido la tumbaba, y
+// eso era lo que cortaba y reiniciaba las sesiones. No hay takeover que evitar en
+// este camino: el nodo no se duerme entre medio. serviceMode_run() reconecta para
+// renegociarlo, porque el valor que gobierna al broker es el que viajó en el
+// CONNECT.
+#define MQTT_KEEPALIVE_NORMAL_SEC    30
+#define MQTT_KEEPALIVE_SERVICE_SEC   60
+
 // Tamaño del buffer de PubSubClient, y el payload útil que queda para el topic de
 // telemetría una vez descontados el header fijo (5), el largo (2) y el topic.
 // Derivarlo en vez de escribir 741 a mano evita que se desincronice si cambia el

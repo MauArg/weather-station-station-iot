@@ -337,6 +337,35 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
     uint32_t lastHeartbeatMs = 0;
     const uint32_t HEARTBEAT_INTERVAL_MS = (uint32_t)SERVICE_MODE_HEARTBEAT_SEC * 1000;
 
+    // ── Keepalive largo para la sesión ────────────────────────────────────────
+    // El nodo llegó hasta acá con el keepalive del ciclo normal, que es corto a
+    // propósito para que el broker expire la sesión antes del próximo wake y no
+    // haya takeover por client-ID duplicado (ver connectMQTT en main.cpp). Acá el
+    // compromiso es el opuesto: la sesión dura minutos, ArduinoOTA.handle() puede
+    // bloquear decenas de segundos sin que el nodo mande nada, y el margen del
+    // broker es lo único que la sostiene. Takeover no hay: el nodo no se duerme
+    // en el medio.
+    //
+    // El valor que gobierna al broker es el que viajó en el CONNECT, así que
+    // cambiarlo obliga a reconectar. Va DESPUÉS del service_mode_active y del
+    // setup de OTA a propósito: de ese status sale la verificación del flasheo en
+    // la UI y no se puede arriesgar a demorarlo, y de acá en adelante el flasheo
+    // ya no depende de MQTT. Un solo intento y sin reintentos — si falla, el loop
+    // de abajo reconecta igual, y con el keepalive nuevo, que queda seteado en el
+    // cliente. En el camino de re-entrada tras el reinicio del OTA la conexión
+    // puede no existir (connectMQTT ignora su retorno ahí): entonces sólo queda
+    // seteado el valor y lo aplica _reconnectMqtt.
+    mqtt.setKeepAlive(MQTT_KEEPALIVE_SERVICE_SEC);
+    if (mqtt.connected()) {
+        mqtt.disconnect();
+        if (!mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
+            LOG_E("Reconexión con keepalive largo falló (%d) — el loop reintenta", mqtt.state());
+        }
+    }
+
+    // Las suscripciones y el callback van después del bloque de arriba a propósito:
+    // una reconexión los pierde, y este orden los deja bien puestos tanto si se
+    // reconectó como si no.
     _cmdCleared    = false;
     _logReqPending = false;
     mqtt.subscribe(TOPIC_CMD);

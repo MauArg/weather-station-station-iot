@@ -178,13 +178,19 @@ bool connectMQTT() {
     // + payload). 768 deja margen para el subsistema de viento pendiente.
     mqtt.setBufferSize(MQTT_BUFFER_BYTES);
 
-    // Keepalive: el default de PubSubClient es 15 s (PubSubClient.h). Con ese
-    // valor, un solo PINGREQ/PINGRESP perdido tumba la conexión — en un enlace
-    // marginal como el de la ubicación de campo eso pasa seguido, y es lo que
-    // hacía que el service mode se cortara y reiniciara. 60 s da 4× más margen.
-    // No cuesta nada en el ciclo normal: el nodo está despierto ~10 s, así que el
-    // keepalive nunca llega a dispararse ahí.
-    mqtt.setKeepAlive(60);
+    // Keepalive corto a propósito en el ciclo normal — no por el PING del cliente
+    // (el nodo vive 2,2 s y nunca llega a mandarlo) sino por el otro efecto del
+    // keepalive: el broker da por muerta una sesión a los 1,5 × keepalive. A 30 s
+    // eso son 45 s, por debajo del ciclo de ~63 s, así que cada wake encuentra el
+    // client-ID libre. Con los 60 s que había antes la expiración caía a los 90 s
+    // y la sesión anterior seguía viva en cada reconexión, forzando un takeover por
+    // duplicado en todos los ciclos. Ver MQTT_KEEPALIVE_NORMAL_SEC en config.h y
+    // la sección de pérdida de telemetría en ../STATUS.md.
+    //
+    // Service mode necesita lo contrario y lo renegocia por su cuenta, reconectando
+    // (serviceMode_run) — el valor que gobierna al broker es el que viaja en el
+    // CONNECT, así que no alcanza con cambiarlo sobre una conexión ya abierta.
+    mqtt.setKeepAlive(MQTT_KEEPALIVE_NORMAL_SEC);
 
     // Socket timeout: el default también es 15 s, y se paga entero cuando la
     // conexión falla. En el ~17% de ciclos que no logran publicar, eso son 15 s
