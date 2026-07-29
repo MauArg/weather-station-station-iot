@@ -166,7 +166,26 @@
 //
 // Warmup tras energizar Rail B. El datasheet del AM2302 pide ≥1s de "unstable
 // status"; 2s es margen conservador. Se mide desde el rail-on, no desde el boot
-// — ver sensors_init().
+// — ver sensors_railsOn().
+//
+// OJO — desde 1.5.0 esta constante es la que fija el piso del tiempo despierto.
+// Con el rail-on adelantado al arranque del ciclo, el despierto es
+//   max(camino de red, DHT_WARMUP_MS) + lectura de sensores (~240 ms)
+// y el camino de red mide ~1270 ms (275 WiFi + 42 MQTT + 800 retenido + ~150
+// init), o sea que el término que manda es este. El delay que queda son ~730 ms
+// de espera pura.
+//
+// Consecuencia contraintuitiva: **acortar MQTT_RETAINED_WAIT_MS ya no ahorra
+// nada.** Bajarlo de 800 a 200 ms sólo hace crecer este warmup de 730 a 1330 ms
+// y el despierto total queda igual — el pendiente que figura en ../STATUS.md
+// como "los 800 ms del retenido son el 24% del despierto" dejó de aplicar al
+// quedar detrás de esta barrera.
+//
+// La palanca que sí queda es este mismo número: 2000 ms es 2× el mínimo del
+// datasheet. Bajarlo a ~1200-1500 ms recortaría el despierto casi 1:1, pero hay
+// que validarlo contra lecturas reales del DHT22 antes de tocarlo — el warmup
+// corto ya fue sospechoso de lecturas erráticas una vez (ver ../STATUS.md, el
+// bug de 2026-07-25 donde el warmup nunca se ejecutaba).
 #define DHT_WARMUP_MS           2000
 
 // Período mínimo de muestreo del DHT22 (datasheet: ≥2s entre lecturas).
