@@ -204,7 +204,7 @@ static const char* data_name(uint8_t s) {
 // ─── Callback de promiscuo ────────────────────────────────────────────────────
 // Corre en la tarea de WiFi: acá sólo se filtra y se encola. Imprimir desde
 // adentro haría perder tramas, que es justo lo que no queremos.
-static void IRAM_ATTR sniffer_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
+static void sniffer_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
     const wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
     const uint16_t len = pkt->rx_ctrl.sig_len;
     if (len < 10) return;
@@ -250,7 +250,11 @@ static void IRAM_ATTR sniffer_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
         r.reason = pkt->payload[24] | (pkt->payload[25] << 8);
     }
 
-    xQueueSendFromISR(q, &r, NULL);
+    // xQueueSend y no xQueueSendFromISR: esto NO es una ISR, corre en la tarea
+    // de WiFi. La variante FromISR desde contexto de tarea puede disparar un
+    // assert de FreeRTOS. Timeout 0 para no bloquear nunca al driver: si la
+    // cola se llena preferimos perder una trama antes que frenar la radio.
+    xQueueSend(q, &r, 0);
 }
 
 static void fmt_mac(char* out, const uint8_t* m) {
@@ -365,5 +369,16 @@ void loop() {
 
     if (burst_open && (millis() - burst_last_ms) > BURST_GAP_MS) {
         close_burst();
+    }
+
+    // Latido. El nodo transmite 2,3 s cada 63, así que el silencio es el estado
+    // normal — y sin esto no hay manera de distinguir "vivo y esperando" de
+    // "colgado", ni de saber que la captura está enganchada si uno se perdió el
+    // banner (que sale una sola vez).
+    static uint32_t last_beat = 0;
+    if (millis() - last_beat > 15000) {
+        last_beat = millis();
+        Serial.printf("· vivo  t=%lu s  rafagas=%u\n",
+                      (unsigned long)(millis() / 1000), burst_num);
     }
 }
