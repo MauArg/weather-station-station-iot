@@ -29,24 +29,30 @@
 // El default del Arduino-ESP32 es modem sleep (`WIFI_PS_MIN_MODEM`): la radio se
 // apaga entre beacons DTIM y despierta a recibir.
 //
-// Medido el 2026-07-29, y es el motivo por el que esto es un `#define` y no el
-// default: **la asociación WiFi se muere a un tiempo variable después de
-// asociarse**, y ahí se explica toda la pérdida de telemetría. Sondeando el nodo
-// con ICMP cada 150 ms, la ventana en que responde predice exactamente hasta
-// dónde llega el ciclo:
+// PROBADO Y DESCARTADO como causa de la pérdida de telemetría (2026-07-29). Se
+// apagó, se midieron 33 ciclos, y la pérdida siguió igual. Vuelve a estar
+// encendido porque no compraba nada y cuesta ~22 mAh/día sobre un presupuesto
+// activo de ~47.
 //
-//     0-180 ms alcanzable   -> ni siquiera conecta al broker
-//   470-1100 ms alcanzable  -> conecta, no llega a publicar (el publish va a 2,3 s)
-//  2150-2700 ms alcanzable  -> publica y cierra limpio
+// La verificación importa tanto como el resultado: era muy fácil que
+// `WiFi.setSleep(false)` no tomara efecto —el modo se aplica sobre el driver ya
+// inicializado y `WiFi.begin()` puede pisarlo—, así que se confirmó por fuera
+// del firmware antes de sacar conclusiones. Dos señales independientes:
 //
-// Dos indicios apuntan al power save: los pings vuelven en 33-74 ms dentro de una
-// LAN (es el AP guardando el paquete hasta el DTIM del nodo), y agregar tráfico
-// de bajada durante el sleep hace que la asociación muera ANTES, no después.
+//   RTT de ICMP:  42 ms de mediana con power save  ->  7 ms sin él (mínimo 3)
+//   serie de system_v en Grafana: con power save sale con picos, sin él sale
+//     como línea continua. El INA219 muestrea una vez por ciclo, y con la radio
+//     entrando y saliendo de modem sleep la muestra cae a veces con la radio
+//     dormida y a veces despierta; sin power save todas se parecen.
 //
-// Apagarlo no es gratis: son ~+22 mAh/día sobre un presupuesto activo de ~47, así
-// que si resuelve la pérdida hay que decidir el tradeoff con el dato en la mano —
-// y se puede medir solo, porque el nodo publica `system_mA` en cada telemetría.
-#define WIFI_POWER_SAVE     0
+// La causa real resultó ser otra y de otra capa: el enlace es asimétrico y el
+// AP no escucha bien al nodo (-74 dBm contra los -62 que el nodo cree tener).
+// Ver ../STATUS.md → "CAUSA RAÍZ".
+//
+// Se deja el `#define` en vez de borrar el código: apagarlo es la primera cosa
+// que uno quiere volver a probar si el cuadro cambia, y así no hay que
+// re-derivar cómo se hacía ni dónde va la llamada.
+#define WIFI_POWER_SAVE     1
 
 // ─── MQTT ─────────────────────────────────────────────────────────────────────
 #define MQTT_BROKER         "192.168.18.250"   // IP de la Raspberry Pi
