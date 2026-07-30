@@ -14,6 +14,15 @@ Se escribe con DLT_IEEE802_11 (105), o sea 802.11 crudo sin radiotap. El RSSI no
 entra en el pcap por eso — pero está en la salida de texto del sniffer, y acá lo
 único que interesa es el contenido de los paquetes.
 
+─── OJO: las tramas traen FCS ────────────────────────────────────────────────
+
+El `sig_len` que entrega el modo promiscuo del ESP32 **incluye los 4 bytes de
+FCS** al final de cada trama (verificado: un ACK sale de 14 B = 10 de cabecera +
+4). Si Wireshark no lo sabe, interpreta esos 4 bytes como parte del cuerpo y
+marca las tramas como malformadas.
+
+    Preferencias → Protocols → IEEE 802.11 → ✓ "Assume packets have FCS"
+
 ─── Para desencriptar en Wireshark ───────────────────────────────────────────
 
     Editar → Preferencias → Protocols → IEEE 802.11
