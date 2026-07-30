@@ -10,6 +10,7 @@
 #include "sensors.h"
 #include "logging.h"
 #include <esp_system.h>
+#include <esp_wifi.h>   // esp_wifi_set_protocol — ver WIFI_FORCE_11B en config.h
 
 // ─── Clientes globales ────────────────────────────────────────────────────────
 WiFiClient   wifiClient;
@@ -148,6 +149,18 @@ bool connectWiFi() {
     // viene, y con el default (modem sleep) la asociación se muere a mitad del
     // ciclo. Ver WIFI_POWER_SAVE en config.h para la medición que llevó acá.
     WiFi.setSleep(WIFI_POWER_SAVE ? true : false);
+
+#if WIFI_FORCE_11B
+    // Va después de WiFi.mode(), que es lo que inicializa y arranca el driver:
+    // esp_wifi_set_protocol() falla con ESP_ERR_WIFI_NOT_STARTED si se llama
+    // antes. Ver WIFI_FORCE_11B en config.h — sale de que el sniffer decodifica
+    // las tramas de gestión del nodo (1 Mbps) y ni una sola de sus tramas de
+    // datos (OFDM), a la misma distancia y en el mismo instante.
+    esp_err_t rate_err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);
+    if (rate_err != ESP_OK) {
+        LOG_E("No se pudo forzar 802.11b: %d", (int)rate_err);
+    }
+#endif
 
     // IP estática
     if (!WiFi.config(WIFI_STATIC_IP, WIFI_GATEWAY, WIFI_SUBNET, WIFI_DNS)) {

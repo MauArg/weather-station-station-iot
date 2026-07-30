@@ -25,6 +25,30 @@
 #define WIFI_TIMEOUT_MS     15000
 #define WIFI_MAX_RETRIES    3
 
+// ─── Tasa de transmisión de WiFi ──────────────────────────────────────────────
+// Fuerza el modo 802.11b (1 / 2 / 5,5 / 11 Mbps) en vez de dejar que el control
+// de tasa suba a OFDM (11g/n, hasta 72 Mbps).
+//
+// El motivo salió del sniffer, y es evidencia directa y no una teoría. Sobre una
+// captura de 6844 tramas con el sniffer al lado del AP:
+//
+//   tramas HACIA el nodo capturadas ........ 4550
+//   tramas de gestión DEL nodo (a 1 Mbps) .. se capturan bien
+//   tramas de DATOS del nodo (OFDM) ........ CERO, ni una en una hora
+//
+// Misma distancia, misma antena, mismo instante. Lo único que cambia entre las
+// que se decodifican y las que no es **la tasa de modulación**. O sea que las
+// transmisiones del nodo a tasa alta están al límite de lo demodulable, y el AP
+// —que es mejor receptor— las recibe pero pagando 16-37% de reintentos.
+//
+// A 1-11 Mbps la sensibilidad requerida es 5-10 dB menor que en OFDM: es
+// justamente el margen que falta. El costo es tiempo de aire (una trama de 660 B
+// tarda 0,5 ms a 11 Mbps contra 0,1 ms a 54), que en un nodo que transmite un
+// puñado de tramas por minuto no se nota ni en energía ni en el canal.
+//
+// Poner en 0 para volver al comportamiento por defecto.
+#define WIFI_FORCE_11B      1
+
 // ─── Power save de WiFi ───────────────────────────────────────────────────────
 // El default del Arduino-ESP32 es modem sleep (`WIFI_PS_MIN_MODEM`): la radio se
 // apaga entre beacons DTIM y despierta a recibir.
