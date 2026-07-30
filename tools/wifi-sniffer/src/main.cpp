@@ -52,6 +52,24 @@ static const uint8_t AP_BSSID[6] = {0xBE, 0xF1, 0x7E, 0xE9, 0xF7, 0x2F};
   #define SNIFF_LED 1
 #endif
 
+// Modo pcap: en vez de la salida legible, emite cada trama ENTERA en base64 para
+// rearmarla del lado de la PC y abrirla con Wireshark. Es lo que permite pasar de
+// "veo las cabeceras" a "veo los paquetes", porque Wireshark desencripta el
+// cuerpo con el PSK — y este caso es ideal para eso: el nodo rehace el handshake
+// de 4 vias en CADA ciclo, que es justo lo que Wireshark necesita para derivar la
+// PTK. Sin eso habria que capturar el momento exacto en que un cliente se asocia.
+//
+// El "baud rate" no limita nada acá: por el USB nativo la salida va a velocidad
+// USB, no a 115200. Por eso se puede volcar la trama completa sin pensarlo.
+#ifndef SNIFF_PCAP
+  #define SNIFF_PCAP 0
+#endif
+// Recorte por trama. Un publish de telemetria son ~503 B de MQTT mas las
+// cabeceras 802.11/LLC/IP/TCP, asi que 600 entra entero. Lo que se pase queda
+// truncado y Wireshark lo marca — no rompe nada, pero no se podria desencriptar
+// esa trama porque el MIC de CCMP se calcula sobre el cuerpo completo.
+#define PCAP_SNAPLEN 600
+
 // Silencio que cierra una ráfaga. El nodo vive ~2,3 s y duerme ~60 s, así que
 // 5 s separan un ciclo del siguiente sin ninguna ambigüedad.
 static const uint32_t BURST_GAP_MS = 5000;
@@ -79,6 +97,11 @@ struct rec_t {
     uint8_t  n_addr;      // cuántas direcciones son válidas en esta trama
     uint16_t reason;      // sólo deauth/disassoc
     uint16_t len;
+#if SNIFF_PCAP
+    uint32_t us;          // marca de tiempo fina, para el pcap
+    uint16_t caplen;
+    uint8_t  raw[PCAP_SNAPLEN];
+#endif
 };
 
 static QueueHandle_t q;
@@ -159,6 +182,29 @@ static void led_for_frame(uint8_t type, uint8_t subtype, bool retry, bool from_n
 #else
 static inline void led_tick() {}
 static inline void led_for_frame(uint8_t, uint8_t, bool, bool) {}
+#endif
+
+#if SNIFF_PCAP
+// Base64 a mano, contra un buffer estatico. La libreria del core devuelve String
+// y esto corre una vez por trama dentro de una rafaga: no queremos que el heap
+// se fragmente ni pagar allocaciones en el camino caliente.
+static const char B64C[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static char b64buf[(PCAP_SNAPLEN + 2) / 3 * 4 + 1];
+
+static const char* b64_encode(const uint8_t* d, size_t n) {
+    size_t o = 0;
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = (uint32_t)d[i] << 16;
+        if (i + 1 < n) v |= (uint32_t)d[i + 1] << 8;
+        if (i + 2 < n) v |= (uint32_t)d[i + 2];
+        b64buf[o++] = B64C[(v >> 18) & 63];
+        b64buf[o++] = B64C[(v >> 12) & 63];
+        b64buf[o++] = (i + 1 < n) ? B64C[(v >> 6) & 63] : '=';
+        b64buf[o++] = (i + 2 < n) ? B64C[v & 63] : '=';
+    }
+    b64buf[o] = 0;
+    return b64buf;
+}
 #endif
 
 static const char* mgmt_name(uint8_t s) {
@@ -254,6 +300,12 @@ static void sniffer_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
     // de WiFi. La variante FromISR desde contexto de tarea puede disparar un
     // assert de FreeRTOS. Timeout 0 para no bloquear nunca al driver: si la
     // cola se llena preferimos perder una trama antes que frenar la radio.
+#if SNIFF_PCAP
+    r.us     = (uint32_t)esp_timer_get_time();
+    r.caplen = (len > PCAP_SNAPLEN) ? PCAP_SNAPLEN : len;
+    memcpy(r.raw, pkt->payload, r.caplen);
+#endif
+
     xQueueSend(q, &r, 0);
 }
 
@@ -280,7 +332,13 @@ void setup() {
     delay(1500);
     Serial.println("\n\n=== wifi-sniffer ===");
 
+#if SNIFF_PCAP
+    // 48 registros de ~600 B son ~29 KB. Alcanza de sobra: el loop los drena por
+    // USB a velocidad de megabytes y una rafaga entera son ~100 tramas.
+    q = xQueueCreate(48, sizeof(rec_t));
+#else
     q = xQueueCreate(512, sizeof(rec_t));
+#endif
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -350,6 +408,14 @@ void loop() {
         if (r.n_addr >= 2) fmt_mac(s2, r.a2);
         if (r.n_addr >= 3) fmt_mac(s3, r.a3);
 
+#if SNIFF_PCAP
+        // Una linea por trama: microsegundos, RSSI, largo ORIGINAL (para que el
+        // pcap registre el truncado si lo hubo) y la trama cruda en base64. El
+        // resto de la salida legible se calla en este modo para que el parser no
+        // tenga que distinguir nada.
+        Serial.printf("#P %lu %d %u %s\n", (unsigned long)r.us, (int)r.rssi,
+                      (unsigned)r.len, b64_encode(r.raw, r.caplen));
+#else
         Serial.printf("%8u %4d %-13s %s%s a1=%s a2=%s a3=%s %3uB",
                       r.t_ms, r.rssi, name,
                       r.retry ? "RETRY " : "      ",
@@ -361,6 +427,7 @@ void loop() {
         if (from_node) Serial.print("  [nodo→]");
         if (to_node)   Serial.print("  [→nodo]");
         Serial.println();
+#endif
 
         led_for_frame(r.type, r.subtype, r.retry, from_node);
     }
