@@ -20,6 +20,25 @@ RTC_DATA_ATTR uint32_t rtc_bootCount    = 0;
 RTC_DATA_ATTR uint8_t  rtc_wifiChannel  = 0;
 RTC_DATA_ATTR uint8_t  rtc_wifiBssid[6] = {0};
 
+// ─── Foto del enlace al cerrar el ciclo, para diagnosticar los perdidos ───────
+// El problema de observabilidad de los ciclos perdidos es que, por definición, no
+// publican nada. Pero el ciclo SIGUIENTE sí publica ~60% de las veces, y la RTC
+// memory sobrevive al deep sleep: alcanza con guardar acá el estado del enlace en
+// el último instante del ciclo y mandarlo en la telemetría de después.
+//
+// Contesta la pregunta que decide cuál es el arreglo: al final de un ciclo que se
+// perdió, ¿el nodo SABE que se quedó sin enlace (`WiFi.status()` != 3) o cree que
+// sigue asociado? Si lo sabe, alcanza con re-chequear y reasociarse antes de
+// publicar. Si no lo sabe, el driver está sordo y mudo creyéndose conectado, y
+// hace falta confirmación de entrega en banda.
+//
+// Sin captura de logs ni service mode, que es lo que hacía cara esta pregunta.
+RTC_DATA_ATTR uint32_t rtc_prevBoot     = 0;
+RTC_DATA_ATTR uint8_t  rtc_prevWifiSt   = 0;
+RTC_DATA_ATTR int8_t   rtc_prevRssi     = 0;
+RTC_DATA_ATTR int8_t   rtc_prevMqttSt   = 0;
+RTC_DATA_ATTR uint16_t rtc_prevAwakeMs  = 0;
+
 // ─── Buffers para comando MQTT (llenados en callback) ─────────────────────────
 static String  pendingCmdPayload = "";
 static bool    cmdReceived       = false;
@@ -438,6 +457,23 @@ void publishTelemetry() {
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
 
+    // Cómo cerró el ciclo ANTERIOR (ver el bloque de rtc_prev* arriba). El
+    // `pv_boot` es imprescindible: sin él no se puede saber a qué ciclo
+    // corresponde la foto, y son justamente los ciclos que faltan los que
+    // interesan. Se omite en el primer ciclo post-flasheo, donde la RTC memory
+    // está en cero y los valores no significan nada.
+    //
+    // ~55 B extra sobre un payload de ~480 y un presupuesto de 741, así que no
+    // se acerca al límite del buffer. Es temporal: sale cuando la pregunta esté
+    // contestada.
+    if (rtc_prevBoot != 0) {
+        doc["pv_boot"] = rtc_prevBoot;
+        doc["pv_st"]   = rtc_prevWifiSt;    // wl_status_t: 3 = WL_CONNECTED
+        doc["pv_rssi"] = rtc_prevRssi;
+        doc["pv_mq"]   = rtc_prevMqttSt;    // PubSubClient::state(): 0 = conectado
+        doc["pv_ms"]   = rtc_prevAwakeMs;
+    }
+
     // Sólo mientras hay una captura corriendo: costo cero en operación normal,
     // igual que el resto de los campos condicionales de arriba. Como capturar no
     // cuesta energía, no hay auto-expiración por tiempo — la higiene correcta es
@@ -479,6 +515,19 @@ void publishTelemetry() {
 // Deep sleep
 // ═════════════════════════════════════════════════════════════════════════════
 void goToDeepSleep() {
+    // ANTES de cualquier teardown: mqtt.disconnect() y WiFi.disconnect(true)
+    // destruyen exactamente lo que queremos observar, así que medir después daría
+    // WL_DISCONNECTED siempre y el dato no valdría nada. Este es además el único
+    // punto por el que pasan TODOS los caminos, incluidos los que abortan sin
+    // publicar (WiFi o MQTT fallidos), que son justo los que no se pueden ver
+    // desde afuera.
+    rtc_prevBoot    = rtc_bootCount;
+    rtc_prevWifiSt  = (uint8_t)WiFi.status();
+    rtc_prevRssi    = (int8_t)WiFi.RSSI();
+    rtc_prevMqttSt  = (int8_t)mqtt.state();
+    const uint32_t awake = millis();
+    rtc_prevAwakeMs = (uint16_t)(awake > 65535 ? 65535 : awake);
+
     LOG_V("Entrando en deep sleep (%d seg)", SLEEP_INTERVAL_SEC);
     // Cierra el ciclo en el log: el tiempo despierto es la métrica que conecta
     // los fallos de conexión con el consumo (10 s de un ciclo sano contra los
