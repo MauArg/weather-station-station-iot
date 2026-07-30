@@ -40,6 +40,18 @@ static const uint8_t AP_BSSID[6] = {0xBE, 0xF1, 0x7E, 0xE9, 0xF7, 0x2F};
   #define SNIFF_CHANNEL 1
 #endif
 
+// LED RGB de la placa. En la ESP32-S3-DevKitC-1 **v1.0** es GPIO48; en la v1.1
+// lo movieron a GPIO38. Si el LED no responde, ese es el primer sospechoso.
+#define STR_(x) #x
+#define STR(x) STR_(x)
+
+#ifndef SNIFF_RGB_PIN
+  #define SNIFF_RGB_PIN 48
+#endif
+#ifndef SNIFF_LED
+  #define SNIFF_LED 1
+#endif
+
 // Silencio que cierra una ráfaga. El nodo vive ~2,3 s y duerme ~60 s, así que
 // 5 s separan un ciclo del siguiente sin ninguna ambigüedad.
 static const uint32_t BURST_GAP_MS = 5000;
@@ -81,6 +93,73 @@ static uint32_t burst_num = 0;
 static inline bool mac_eq(const uint8_t* a, const uint8_t* b) {
     return memcmp(a, b, 6) == 0;
 }
+
+// ─── LED RGB ──────────────────────────────────────────────────────────────────
+// El color codifica el tipo de trama, así que se puede diagnosticar de reojo sin
+// leer el serial: una ráfaga sana es violeta (asociación) y después verde y cian
+// alternando. Ámbar de más quiere decir que el enlace está peleando, y rojo es la
+// trama que estamos cazando.
+//
+// El brillo va deliberadamente bajo: un WS2812 al máximo encandila y hace
+// indistinguibles los colores. El destello se pinta al llegar la trama y se apaga
+// con un decaimiento exponencial — sin eso, tramas separadas por microsegundos
+// serían un borrón continuo.
+#if SNIFF_LED
+static uint8_t  led_r = 0, led_g = 0, led_b = 0;
+static uint32_t led_latch_until = 0;
+
+static void led_flash(uint8_t r, uint8_t g, uint8_t b, uint32_t hold_ms = 0) {
+    // Un latch (el deauth) no se deja pisar por el tráfico que venga después:
+    // es justamente la trama que no queremos que pase desapercibida.
+    if (hold_ms == 0 && millis() < led_latch_until) return;
+    led_r = r; led_g = g; led_b = b;
+    if (hold_ms) led_latch_until = millis() + hold_ms;
+    neopixelWrite(SNIFF_RGB_PIN, led_r, led_g, led_b);
+}
+
+static void led_tick() {
+    static uint32_t last = 0;
+    const uint32_t now = millis();
+    if (now - last < 12) return;
+    last = now;
+    if (now < led_latch_until) return;
+
+    if (led_r || led_g || led_b) {
+        led_r = (uint8_t)(led_r * 78 / 100);
+        led_g = (uint8_t)(led_g * 78 / 100);
+        led_b = (uint8_t)(led_b * 78 / 100);
+        neopixelWrite(SNIFF_RGB_PIN, led_r, led_g, led_b);
+    } else {
+        // Respiración azul muy tenue en el silencio entre ciclos: confirma que
+        // sigue vivo —son ~60 s sin nada— y hace que la ráfaga contraste.
+        const uint32_t phase = (now / 6) % 512;
+        const uint8_t  v = (uint8_t)((phase < 256 ? phase : 511 - phase) / 64);
+        neopixelWrite(SNIFF_RGB_PIN, 0, 0, v);
+    }
+}
+
+// Paleta, elegida por lo que significa cada trama en esta investigación.
+static void led_for_frame(uint8_t type, uint8_t subtype, bool retry, bool from_node) {
+    if (type == 0 && (subtype == 12 || subtype == 10)) {
+        led_flash(160, 0, 0, 1500);            // DEAUTH/disassoc — rojo, latcheado
+    } else if (type == 0 && (subtype == 11 || subtype <= 3)) {
+        led_flash(55, 0, 60);                  // auth / assoc — violeta
+    } else if (type == 0) {
+        led_flash(0, 0, 30);                   // otro management — azul tenue
+    } else if (type == 1) {
+        led_flash(22, 22, 22);                 // control (ACK, RTS/CTS) — blanco
+    } else if (retry) {
+        led_flash(70, 28, 0);                  // reintento — ámbar
+    } else if (from_node) {
+        led_flash(0, 55, 0);                   // datos del nodo — verde
+    } else {
+        led_flash(0, 32, 55);                  // datos hacia el nodo — cian
+    }
+}
+#else
+static inline void led_tick() {}
+static inline void led_for_frame(uint8_t, uint8_t, bool, bool) {}
+#endif
 
 static const char* mgmt_name(uint8_t s) {
     switch (s) {
@@ -223,12 +302,22 @@ void setup() {
     fmt_mac(n, NODE_MAC);
     fmt_mac(a, AP_BSSID);
     Serial.printf("canal %d   nodo %s   AP %s\n", SNIFF_CHANNEL, n, a);
-    Serial.println("beacons y probe-resp filtrados; el resto se imprime\n");
+    Serial.println("beacons y probe-resp filtrados; el resto se imprime");
+#if SNIFF_LED
+    Serial.println(
+        "\nLED (GPIO" STR(SNIFF_RGB_PIN) "):  violeta=auth/assoc  verde=datos del nodo\n"
+        "                cian=datos hacia el nodo  ámbar=RETRY  blanco=ACK/control\n"
+        "                ROJO FIJO=deauth/disassoc  azul respirando=silencio\n");
+#endif
+    Serial.println();
 }
 
 void loop() {
     rec_t r;
-    while (xQueueReceive(q, &r, pdMS_TO_TICKS(200)) == pdTRUE) {
+    // Timeout corto a propósito: con 200 ms el decaimiento del LED y la
+    // respiración salían a los saltos. Acá el loop respira cada 10 ms y la
+    // animación queda fluida sin costar nada — no hay nada más que hacer.
+    while (xQueueReceive(q, &r, pdMS_TO_TICKS(10)) == pdTRUE) {
         if (!burst_open) {
             burst_open = true;
             burst_num++;
@@ -268,7 +357,11 @@ void loop() {
         if (from_node) Serial.print("  [nodo→]");
         if (to_node)   Serial.print("  [→nodo]");
         Serial.println();
+
+        led_for_frame(r.type, r.subtype, r.retry, from_node);
     }
+
+    led_tick();
 
     if (burst_open && (millis() - burst_last_ms) > BURST_GAP_MS) {
         close_burst();
