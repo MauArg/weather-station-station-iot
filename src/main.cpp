@@ -221,11 +221,27 @@ bool connectMQTT() {
     // CONNECT, así que no alcanza con cambiarlo sobre una conexión ya abierta.
     mqtt.setKeepAlive(MQTT_KEEPALIVE_NORMAL_SEC);
 
-    // Socket timeout: el default también es 15 s, y se paga entero cuando la
-    // conexión falla. En el ~17% de ciclos que no logran publicar, eso son 15 s
-    // extra despierto a 50-140 mA por nada. 5 s es holgado para un CONNACK en LAN
-    // (llega en decenas de ms) y recorta el costo de un ciclo fallido.
-    mqtt.setSocketTimeout(5);
+    // Socket timeout. Bajado de 5 s a 2 s el 2026-07-30 por energía: es el tiempo
+    // que se paga entero, despierto, en cada ciclo que no logra conectar.
+    //
+    // El número sale de la medición, no del gusto. Sobre 30 ciclos exitosos
+    // consecutivos el tiempo despierto fue de **2291-2293 ms**, con el publish
+    // saliendo siempre a los ~2292: varianza cero. O sea que cuando el handshake
+    // MQTT funciona tarda ~46 ms, y un timeout de 5 s es 100× lo que hace falta.
+    // Con 2 s no se corta ni una conexión de las que hoy prosperan, y se ahorran
+    // ~3 s en el ~27% de ciclos que fallan (≈12 mAh/día sobre un presupuesto
+    // activo de ~47).
+    //
+    // El riesgo, anotado para poder detectarlo: en la primera captura de campo
+    // (1.3.0, otra configuración de router y peor señal) se vieron handshakes
+    // EXITOSOS de 2400-3200 ms. Ese régimen no aparece en los datos actuales,
+    // pero si volviera, este timeout cortaría conexiones que habrían funcionado.
+    // Se detecta sin ambigüedad: los ciclos perdidos con `pv_mq = -4` subirían
+    // mientras el tiempo despierto de los sanos sigue en 2292 ms. Si pasa, subir
+    // a 4 s — cuesta sólo ~4 mAh/día respecto de 2 s.
+    //
+    // No se puede poner 1,5 s: PubSubClient toma segundos enteros.
+    mqtt.setSocketTimeout(2);
 
     const uint32_t mqttStartMs = millis();
     if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
