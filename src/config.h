@@ -22,7 +22,29 @@
 #if !defined(WIFI_SSID) || !defined(WIFI_PASSWORD) || !defined(MQTT_USER)  || !defined(MQTT_PASSWORD) || !defined(OTA_PASSWORD)
   #error "Faltan credenciales: copia secrets.ini.example a secrets.ini y completalo."
 #endif
-#define WIFI_TIMEOUT_MS     15000
+// Timeout por intento de asociación. Bajado de 15 s a 5 s el 2026-07-31, con el
+// dato que faltaba: `STATUS.md` tenía anotado revisar este presupuesto pero pedía
+// primero "capturar una ventana con señal peor", porque el peor caso de
+// 3 × 15 s = 45 s nunca se había observado. Una captura de logs a nivel 1 sobre
+// ~830 ciclos lo mostró **dos veces** (boots 668 y 1074): tres intentos fallidos
+// seguidos y `WIFI_GIVEUP` a los 45,9 s despierto, contra los 2,3 s de un ciclo
+// sano.
+//
+// El desbalance es el mismo que tenía el socket timeout de MQTT: una asociación
+// exitosa tarda **275 ms** (medido, decenas de muestras con varianza mínima) y el
+// timeout estaba en 15.000. Además los códigos con que falla son estados de "no
+// va a funcionar" y no de "está tardando" — `WL_NO_SSID_AVAIL` y
+// `WL_DISCONNECTED`, no un handshake en curso.
+//
+// 5 s y no menos porque el intento 1 usa el BSSID cacheado y los siguientes
+// **escanean**: un scan de las 13 frecuencias más la asociación puede irse a
+// 2-4 s legítimamente. Recortar por debajo de eso cortaría reintentos que sí
+// funcionan — y funcionan: en el boot 1057 el intento 1 falló y el 2 conectó.
+//
+// El ahorro es modesto y conviene no exagerarlo: ~1,4 mAh/día sobre un
+// presupuesto activo de ~47. Lo que evita de verdad es un pico de 45 s despierto
+// sobre una batería que hoy cierra en negativo a media mañana.
+#define WIFI_TIMEOUT_MS     5000
 #define WIFI_MAX_RETRIES    3
 
 // ─── Tasa de transmisión de WiFi ──────────────────────────────────────────────
