@@ -21,25 +21,6 @@ RTC_DATA_ATTR uint32_t rtc_bootCount    = 0;
 RTC_DATA_ATTR uint8_t  rtc_wifiChannel  = 0;
 RTC_DATA_ATTR uint8_t  rtc_wifiBssid[6] = {0};
 
-// ─── Foto del enlace al cerrar el ciclo, para diagnosticar los perdidos ───────
-// El problema de observabilidad de los ciclos perdidos es que, por definición, no
-// publican nada. Pero el ciclo SIGUIENTE sí publica ~60% de las veces, y la RTC
-// memory sobrevive al deep sleep: alcanza con guardar acá el estado del enlace en
-// el último instante del ciclo y mandarlo en la telemetría de después.
-//
-// Contesta la pregunta que decide cuál es el arreglo: al final de un ciclo que se
-// perdió, ¿el nodo SABE que se quedó sin enlace (`WiFi.status()` != 3) o cree que
-// sigue asociado? Si lo sabe, alcanza con re-chequear y reasociarse antes de
-// publicar. Si no lo sabe, el driver está sordo y mudo creyéndose conectado, y
-// hace falta confirmación de entrega en banda.
-//
-// Sin captura de logs ni service mode, que es lo que hacía cara esta pregunta.
-RTC_DATA_ATTR uint32_t rtc_prevBoot     = 0;
-RTC_DATA_ATTR uint8_t  rtc_prevWifiSt   = 0;
-RTC_DATA_ATTR int8_t   rtc_prevRssi     = 0;
-RTC_DATA_ATTR int8_t   rtc_prevMqttSt   = 0;
-RTC_DATA_ATTR uint16_t rtc_prevAwakeMs  = 0;
-
 // ─── Buffers para comando MQTT (llenados en callback) ─────────────────────────
 static String  pendingCmdPayload = "";
 static bool    cmdReceived       = false;
@@ -53,7 +34,6 @@ void  publishTelemetry();
 void  handleCommand(const Command& cmd);
 void  clearRetainedCommand();
 void  goToDeepSleep();
-void  publishUplinkBeacon(const char* mark);
 
 // ═════════════════════════════════════════════════════════════════════════════
 void setup() {
@@ -122,10 +102,6 @@ void setup() {
 
     // Leer comando retenido del broker (esperar hasta MQTT_RETAINED_WAIT_MS)
     Command cmd = waitForRetainedCommand();
-
-    // Baliza: último instante conocido antes de la lectura de sensores, que es el
-    // tramo más largo del ciclo sin tráfico de red. Ver UPLINK_BEACON en config.h.
-    publishUplinkBeacon("pre_sensors");
 
     // Inicializar sensores solo en ciclo normal (no en service mode ni reboot)
     sensors_init();
@@ -249,9 +225,9 @@ bool connectMQTT() {
     // (1.3.0, otra configuración de router y peor señal) se vieron handshakes
     // EXITOSOS de 2400-3200 ms. Ese régimen no aparece en los datos actuales,
     // pero si volviera, este timeout cortaría conexiones que habrían funcionado.
-    // Se detecta sin ambigüedad: los ciclos perdidos con `pv_mq = -4` subirían
-    // mientras el tiempo despierto de los sanos sigue en 2292 ms. Si pasa, subir
-    // a 4 s — cuesta sólo ~4 mAh/día respecto de 2 s.
+    // Se detecta con una captura de logs a nivel 1: aparecerían `LOG_MQTT_FAIL`
+    // con state -4, que hoy son casi inexistentes. Si pasa, subir a 4 s — cuesta
+    // sólo ~4 mAh/día respecto de 2 s.
     //
     // No se puede poner 1,5 s: PubSubClient toma segundos enteros.
     mqtt.setSocketTimeout(2);
@@ -424,29 +400,6 @@ void clearRetainedCommand() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Baliza de diagnóstico del uplink
-// ═════════════════════════════════════════════════════════════════════════════
-// Marcador chico en un topic propio, con el boot_count adentro: eso es lo que
-// permite cruzarlo contra la telemetría que falta y decir "el ciclo 208 llegó
-// hasta acá". Sin retain — no tiene sentido que sobreviva al ciclo, y el topic
-// retenido de comandos es de slot único.
-//
-// No se chequea el retorno a propósito: en QoS 0 no significa entrega (es
-// justamente lo que estamos midiendo) y un fallo local se vería igual en el
-// LOG_PUBLISH_FAIL de la telemetría, dos líneas después.
-void publishUplinkBeacon(const char* mark) {
-#if UPLINK_BEACON
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"boot\":%u,\"mark\":\"%s\",\"ms\":%lu}",
-             (unsigned)rtc_bootCount, mark, (unsigned long)millis());
-    mqtt.publish(TOPIC_DEBUG, buf, false);
-    mqtt.loop();
-#else
-    (void)mark;
-#endif
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // Telemetría
 // ═════════════════════════════════════════════════════════════════════════════
 void publishTelemetry() {
@@ -486,23 +439,6 @@ void publishTelemetry() {
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
 
-    // Cómo cerró el ciclo ANTERIOR (ver el bloque de rtc_prev* arriba). El
-    // `pv_boot` es imprescindible: sin él no se puede saber a qué ciclo
-    // corresponde la foto, y son justamente los ciclos que faltan los que
-    // interesan. Se omite en el primer ciclo post-flasheo, donde la RTC memory
-    // está en cero y los valores no significan nada.
-    //
-    // ~55 B extra sobre un payload de ~480 y un presupuesto de 741, así que no
-    // se acerca al límite del buffer. Es temporal: sale cuando la pregunta esté
-    // contestada.
-    if (rtc_prevBoot != 0) {
-        doc["pv_boot"] = rtc_prevBoot;
-        doc["pv_st"]   = rtc_prevWifiSt;    // wl_status_t: 3 = WL_CONNECTED
-        doc["pv_rssi"] = rtc_prevRssi;
-        doc["pv_mq"]   = rtc_prevMqttSt;    // PubSubClient::state(): 0 = conectado
-        doc["pv_ms"]   = rtc_prevAwakeMs;
-    }
-
     // Sólo mientras hay una captura corriendo: costo cero en operación normal,
     // igual que el resto de los campos condicionales de arriba. Como capturar no
     // cuesta energía, no hay auto-expiración por tiempo — la higiene correcta es
@@ -514,12 +450,6 @@ void publishTelemetry() {
 
     char buf[MQTT_BUFFER_BYTES];
     size_t len = serializeJson(doc, buf);
-
-    // Baliza inmediatamente antes del publish grande. Si esta llega y la
-    // telemetría no, el enlace estaba vivo 10 ms antes y lo que no pasa es el
-    // frame de 503 B — que es una conclusión muy distinta a que se caiga el
-    // enlace. Ver UPLINK_BEACON en config.h.
-    publishUplinkBeacon("pre_publish");
 
     if (!mqtt.publish(TOPIC_TELEMETRY, buf, false)) {
         // publish() devuelve false por dos motivos muy distintos: el payload no
@@ -544,19 +474,6 @@ void publishTelemetry() {
 // Deep sleep
 // ═════════════════════════════════════════════════════════════════════════════
 void goToDeepSleep() {
-    // ANTES de cualquier teardown: mqtt.disconnect() y WiFi.disconnect(true)
-    // destruyen exactamente lo que queremos observar, así que medir después daría
-    // WL_DISCONNECTED siempre y el dato no valdría nada. Este es además el único
-    // punto por el que pasan TODOS los caminos, incluidos los que abortan sin
-    // publicar (WiFi o MQTT fallidos), que son justo los que no se pueden ver
-    // desde afuera.
-    rtc_prevBoot    = rtc_bootCount;
-    rtc_prevWifiSt  = (uint8_t)WiFi.status();
-    rtc_prevRssi    = (int8_t)WiFi.RSSI();
-    rtc_prevMqttSt  = (int8_t)mqtt.state();
-    const uint32_t awake = millis();
-    rtc_prevAwakeMs = (uint16_t)(awake > 65535 ? 65535 : awake);
-
     LOG_V("Entrando en deep sleep (%d seg)", SLEEP_INTERVAL_SEC);
     // Cierra el ciclo en el log: el tiempo despierto es la métrica que conecta
     // los fallos de conexión con el consumo (10 s de un ciclo sano contra los

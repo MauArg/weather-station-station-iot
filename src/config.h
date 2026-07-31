@@ -87,34 +87,6 @@
 #define TOPIC_TELEMETRY     "station/01/telemetry"
 #define TOPIC_STATUS        "station/01/status"
 #define TOPIC_CMD           "station/01/cmd"         // retained, escrito por N8N
-#define TOPIC_DEBUG         "station/01/dbg"         // balizas de uplink, sin retain
-
-// ─── Balizas de diagnóstico del uplink (experimento, temporal) ────────────────
-// Medido el 2026-07-29 desde un tercer punto de vista (contadores $SYS del
-// broker): en un ciclo perdido el broker recibe el CONNECT y el SUBSCRIBE (~88 B)
-// y después NADA — ni el PUBLISH de telemetría ni el DISCONNECT. O sea que el
-// camino nodo→broker muere entre los ~330 ms del handshake y los ~2290 ms del
-// publish, y el nodo no se puede enterar: en QoS 0 no hay ack, y publish() sólo
-// informa que lwIP aceptó los bytes.
-//
-// Las balizas acotan ese hueco. Son dos publishes de ~42 B en un topic propio,
-// con el boot_count adentro para poder cruzarlos contra la telemetría faltante:
-//
-//   pre_sensors (~1170 ms, apenas termina la espera del retenido)
-//   pre_publish (~2280 ms, inmediatamente antes de la telemetría)
-//
-// Lo que discrimina, por ciclo perdido:
-//   ninguna llega        → murió durante la espera del retenido
-//   sólo pre_sensors     → murió durante la lectura de sensores
-//   las dos llegan       → el enlace estaba vivo 10 ms antes; lo que no pasa es
-//                          el frame de 503 B de la telemetría, y eso apunta al
-//                          tamaño, no al enlace
-//   la telemetría llega  → el tráfico extra la arregló, y entonces el problema es
-//                          el hueco de inactividad de ~1,7 s (modem sleep)
-//
-// Poner en 0 para volver al camino de red sin perturbar, que es el baseline
-// contra el que se comparan las mediciones.
-#define UPLINK_BEACON       0
 
 // Tiempo de espera para recibir el mensaje retenido del broker
 #define MQTT_RETAINED_WAIT_MS  800
