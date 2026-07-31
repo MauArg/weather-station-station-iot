@@ -8,11 +8,15 @@
 
 &#x20;
 
-\## Estado actual en campo (actualizado 2026-07-29)
+\## Estado actual en campo (actualizado 2026-07-31)
 
 &#x20;
 
-\*\*Firmware en campo: `1.5.0`.\*\* Historial reciente: `1.1.0` (DHT22) → `1.2.0` (service mode + fix del loop de reboot) → `1.3.0`/`1.3.1` (sistema de logs) → `1.4.0` (INA219 en power-down) → `1.5.0` (warmup del DHT22 en paralelo con la red). Ver `../STATUS.md` para el detalle de cada uno.
+\*\*Hardware en campo: PCB v2 (main + aux), con doble capa de barniz aislante aplicada.\*\* El prototipo de dos perfboards con cold solder joints ya no está en servicio, y el issue de I2C intermitente quedó cerrado — ver `../STATUS.md`.
+
+&#x20;
+
+\*\*Firmware en campo: `1.13.1`.\*\* Historial reciente: `1.1.0` (DHT22) → `1.2.0` (service mode + fix del loop de reboot) → `1.3.0`/`1.3.1` (sistema de logs) → `1.4.0` (INA219 en power-down) → `1.5.0` (warmup del DHT22 en paralelo con la red) → `1.6.0`-`1.13.1` (investigación de pérdida de telemetría: keepalive, timeouts, y sobre todo `WIFI_FORCE_11B`, que llevó la pérdida de 39% a 0,3%). Ver `../STATUS.md` para el detalle de cada uno.
 
 &#x20;
 
@@ -59,7 +63,11 @@ Versión definitiva en desarrollo para reemplazar el prototipo de dos perfboards
 
 &#x20;
 
-\*\*Plan de protección contra humedad/estrés térmico\*\* (antes de instalar los módulos enchufables): terminar de soldar todos los componentes → limpiar residuos de flux con alcohol isopropílico → enmascarar con cinta los headers hembra donde van INA219/ESP32 (para que el barniz no llegue a los contactos) → aplicar Flux Protector (ContactFlux) y barniz dielectrico (Delta) sobre toda la placa ya soldada → dejar curar → recién ahí insertar los módulos en los headers.
+\*\*Protección contra humedad/estrés térmico — EJECUTADA, doble capa de barniz aplicada.\*\* El procedimiento que se siguió (antes de instalar los módulos enchufables): terminar de soldar todos los componentes → limpiar residuos de flux con alcohol isopropílico → enmascarar con cinta los headers hembra donde van INA219/ESP32 (para que el barniz no llegue a los contactos) → aplicar Flux Protector (ContactFlux) y barniz dielectrico (Delta) sobre toda la placa ya soldada → dejar curar → recién ahí insertar los módulos en los headers.
+
+&#x20;
+
+Importa para interpretar la telemetría: el DHT22 de la caja quedó como monitor de integridad del sellado, y cuando marca humedad alta adentro la pregunta ya no es si la electrónica está expuesta —está barnizada— sino si entró agua que hay que sacar. Ver `../STATUS.md` → "Humedad dentro de la caja".
 
 &#x20;
 
