@@ -1,41 +1,41 @@
 #include "service_mode.h"
 #include "config.h"
-#include "sensors.h"        // monitor de batería durante la sesión
-#include "logging.h"        // dump de logs — el nodo está despierto y conectado
+#include "sensors.h"        // battery monitor during the session
+#include "logging.h"        // log dump — the node is awake and connected
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <math.h>
 
-// ─── Variables RTC (definición) ───────────────────────────────────────────────
+// ─── RTC variables (definition) ──────────────────────────────────────────────
 RTC_DATA_ATTR bool     rtc_inServiceMode     = false;
 RTC_DATA_ATTR int      rtc_serviceTimeoutMin = SERVICE_MODE_DEFAULT_TIMEOUT_MIN;
 RTC_DATA_ATTR uint32_t rtc_serviceElapsedSec = 0;
 
-// ─── Detección de comando limpiado ────────────────────────────────────────────
-// A nivel de archivo y no dentro de serviceMode_run() porque hay que poder
-// reinstalar el callback después de una reconexión de MQTT.
+// ─── Cleared command detection ────────────────────────────────────────────────
+// At file scope and not inside serviceMode_run() because the callback needs
+// to be reinstallable after an MQTT reconnect.
 static volatile bool _cmdCleared = false;
 
-// ─── Pedidos de log pendientes ────────────────────────────────────────────────
-// El callback sólo parsea y deja el pedido acá; la respuesta se publica desde
-// el loop. Publicar desde adentro del callback de PubSubClient es reentrar en
-// el mismo buffer que se está leyendo.
+// ─── Pending log requests ─────────────────────────────────────────────────────
+// The callback only parses and leaves the request here; the response is
+// published from the loop. Publishing from inside PubSubClient's callback
+// means re-entering the very buffer being read.
 static volatile bool     _logReqPending = false;
-static volatile uint8_t  _logReqKind    = 0;   // 1=página  2=diccionario  3=clear
+static volatile uint8_t  _logReqKind    = 0;   // 1=page  2=dictionary  3=clear
 static volatile uint16_t _logReqArg     = 0;
 static volatile bool     _logReqKeep    = false;
 
 static void _serviceCmdCallback(char* topic, byte* payload, unsigned int length) {
     if (strcmp(topic, TOPIC_CMD) == 0 && length == 0) {
         _cmdCleared = true;
-        LOG_V("Servidor limpió el comando — saliendo de service mode");
+        LOG_V("Server cleared the command — exiting service mode");
         return;
     }
 
     if (strcmp(topic, TOPIC_LOG_REQ) == 0 && length > 0) {
         JsonDocument doc;
         if (deserializeJson(doc, payload, length)) {
-            LOG_E("log/req: JSON inválido");
+            LOG_E("log/req: invalid JSON");
             return;
         }
 
@@ -51,14 +51,14 @@ static void _serviceCmdCallback(char* topic, byte* payload, unsigned int length)
             int page    = doc["page"] | 0;
             _logReqArg  = (page < 0) ? 0 : (uint16_t)page;
         } else {
-            LOG_E("log/req: pedido no reconocido");
+            LOG_E("log/req: unrecognized request");
             return;
         }
         _logReqPending = true;
     }
 }
 
-// ─── Helpers internos ─────────────────────────────────────────────────────────
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 static void _publishStatus(PubSubClient& mqtt, const char* state,
                             int remainingSec = -1, const char* extra = nullptr) {
@@ -68,31 +68,32 @@ static void _publishStatus(PubSubClient& mqtt, const char* state,
     if (remainingSec >= 0) doc["remaining_sec"] = remainingSec;
     if (extra)             doc["info"]          = extra;
 
-    // Voltaje de batería medido bajo carga de service mode: el nodo está despierto
-    // sin deep sleep que le permita recuperar tensión, así que este número es el
-    // relevante para decidir si conviene arrancar un flash. Se omite si el INA219
-    // no respondió, para no publicar un cero que se lea como batería agotada.
+    // Battery voltage measured under service mode load: the node is awake
+    // with no deep sleep to let the voltage recover, so this is the number
+    // that matters when deciding whether to start a flash. Omitted if the
+    // INA219 didn't respond, to avoid publishing a zero that would read as
+    // a dead battery.
     float vbat = sensors_readSystemVoltage();
     if (!isnan(vbat)) doc["system_v"] = vbat;
 
     char buf[256];
     serializeJson(doc, buf);
-    // retain=false para status (no queremos que el broker guarde esto)
+    // retain=false for status (we don't want the broker to keep this)
     mqtt.publish(TOPIC_STATUS, buf, false);
-    LOG_V("Status publicado: %s", buf);
+    LOG_V("Status published: %s", buf);
 }
 
 static void _clearRetainedCmd(PubSubClient& mqtt) {
-    // Publicar payload vacío con retain=true limpia el topic en el broker.
-    // Así el próximo ciclo no recibe el comando de nuevo.
+    // Publishing an empty payload with retain=true clears the topic on the
+    // broker. That way the next cycle doesn't receive the command again.
     mqtt.publish(TOPIC_CMD, "", true);
-    LOG_V("Topic cmd limpiado en broker");
+    LOG_V("cmd topic cleared on broker");
 }
 
-// ─── Respuestas del dump de logs ──────────────────────────────────────────────
+// ─── Log dump responses ───────────────────────────────────────────────────────
 
 static void _publishLogPage(PubSubClient& mqtt, uint16_t page) {
-    // 60 entries × 8 B = 480 B binarios → 640 B de base64 + terminador.
+    // 60 entries × 8 B = 480 B binary → 640 B of base64 + terminator.
     static char b64[LOG_ENTRIES_PER_PAGE * 8 * 4 / 3 + 8];
     uint16_t n = 0;
 
@@ -104,9 +105,10 @@ static void _publishLogPage(PubSubClient& mqtt, uint16_t page) {
         doc["error"] = "no_page";
     } else {
         doc["count"]   = logging_count();
-        // Lo pisado por wraparound: es lo que distingue una captura completa de
-        // una truncada. Sin este número no se sabe si la ventana llegó a cubrir
-        // el evento que se estaba buscando.
+        // What got overwritten by wraparound: this is what distinguishes a
+        // complete capture from a truncated one. Without this number there's
+        // no way to know whether the window managed to cover the event
+        // being looked for.
         doc["dropped"] = logging_dropped();
         doc["entries"] = n;
         doc["b64"]     = b64;
@@ -115,32 +117,32 @@ static void _publishLogPage(PubSubClient& mqtt, uint16_t page) {
     char buf[768];
     size_t len = serializeJson(doc, buf);
     if (!mqtt.publish(TOPIC_LOG_DATA, buf, false)) {
-        LOG_E("log page %u no se pudo publicar (%u B)", page, (unsigned)len);
+        LOG_E("log page %u could not be published (%u B)", page, (unsigned)len);
     }
 }
 
-// El diccionario no entra en un solo mensaje, así que también va paginado — por
-// índice de código en vez de por offset de bytes. El backend lo pide una vez por
-// versión de firmware y lo cachea.
+// The dictionary doesn't fit in a single message, so it's also paginated —
+// by code index instead of by byte offset. The backend requests it once per
+// firmware version and caches it.
 static void _publishLogDictPage(PubSubClient& mqtt, uint16_t from) {
     JsonDocument doc;
     doc["dict"] = true;
     doc["from"] = from;
-    doc["fw"]   = FIRMWARE_VERSION;   // clave de caché del backend
+    doc["fw"]   = FIRMWARE_VERSION;   // backend cache key
     JsonArray codes = doc["codes"].to<JsonArray>();
 
-    size_t   budget = 560;            // presupuesto de cuerpo JSON, con margen
+    size_t   budget = 560;            // JSON body budget, with margin
     uint16_t i      = from;
     const uint8_t total = logging_codeCount();
 
     for (; i < total; i++) {
         const char* name = logging_codeName(i);
         const char* tmpl = logging_codeTemplate(i);
-        size_t cost = strlen(name) + strlen(tmpl) + 24;  // llaves, claves, comillas
+        size_t cost = strlen(name) + strlen(tmpl) + 24;  // braces, keys, quotes
 
-        // Siempre emitir al menos un código: si uno solo excediera el
-        // presupuesto, cortar acá dejaría al backend pidiendo la misma página
-        // para siempre sin avanzar nunca.
+        // Always emit at least one code: if a single one exceeded the
+        // budget, cutting off here would leave the backend requesting the
+        // same page forever without ever advancing.
         if (cost > budget && i > from) break;
         budget = (cost > budget) ? 0 : budget - cost;
 
@@ -156,13 +158,13 @@ static void _publishLogDictPage(PubSubClient& mqtt, uint16_t from) {
     char buf[768];
     size_t len = serializeJson(doc, buf);
     if (!mqtt.publish(TOPIC_LOG_DATA, buf, false)) {
-        LOG_E("dict page desde %u no se pudo publicar (%u B)", from, (unsigned)len);
+        LOG_E("dict page from %u could not be published (%u B)", from, (unsigned)len);
     }
 }
 
-// Borrado en dos fases: el nodo llega acá sólo cuando el backend ya confirmó
-// que tiene todas las páginas. Después de horas de captura, una transferencia
-// incompleta no puede costar la sesión entera.
+// Two-phase clear: the node only gets here once the backend has already
+// confirmed it has every page. After hours of capture, an incomplete
+// transfer can't cost the whole session.
 static void _handleLogClear(PubSubClient& mqtt, bool keep) {
     logging_clear();
     if (!keep) logging_configure(0, 0);
@@ -175,7 +177,7 @@ static void _handleLogClear(PubSubClient& mqtt, bool keep) {
     char buf[128];
     serializeJson(doc, buf);
     mqtt.publish(TOPIC_LOG_DATA, buf, false);
-    LOG_V("Logs borrados (keep=%d, activo=%d)", keep, logging_isActive());
+    LOG_V("Logs cleared (keep=%d, active=%d)", keep, logging_isActive());
 }
 
 static void _serveLogRequest(PubSubClient& mqtt) {
@@ -193,17 +195,18 @@ static void _serveLogRequest(PubSubClient& mqtt) {
     mqtt.loop();
 }
 
-// Reconecta MQTT sin abortar la sesión. El WiFi del ESP32 reasocia solo cuando el
-// AP vuelve, así que los reintentos espaciados le dan tiempo a recuperarse; lo que
-// hay que rehacer a mano es la suscripción, y el callback por las dudas.
+// Reconnects MQTT without aborting the session. The ESP32's WiFi
+// re-associates on its own once the AP comes back, so spaced-out retries
+// give it time to recover; what needs to be redone by hand is the
+// subscription, and the callback just in case.
 static bool _reconnectMqtt(PubSubClient& mqtt) {
     for (int attempt = 1; attempt <= SERVICE_MODE_MQTT_RETRIES; attempt++) {
-        LOG_E("MQTT caído en service mode — reintento %d/%d", attempt, SERVICE_MODE_MQTT_RETRIES);
+        LOG_E("MQTT down in service mode — retry %d/%d", attempt, SERVICE_MODE_MQTT_RETRIES);
         if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
             mqtt.setCallback(_serviceCmdCallback);
             mqtt.subscribe(TOPIC_CMD);
             mqtt.subscribe(TOPIC_LOG_REQ);
-            LOG_V("MQTT reconectado — sesión continúa");
+            LOG_V("MQTT reconnected — session continues");
             return true;
         }
         delay(SERVICE_MODE_MQTT_RETRY_DELAY_MS);
@@ -222,53 +225,58 @@ static void _setupOTA() {
     ArduinoOTA.onStart([]() {
         otaSuccess = false;
         String type = (ArduinoOTA.getCommand() == U_FLASH) ? "firmware" : "filesystem";
-        LOG_V("OTA iniciando: %s", type.c_str());
+        LOG_V("OTA starting: %s", type.c_str());
     });
 
     ArduinoOTA.onEnd([]() {
         otaSuccess = true;
-        LOG_V("OTA completado");
+        LOG_V("OTA complete");
 
-        // Devolver el presupuesto entero a la sesión de después del flasheo.
+        // Return the full budget to the session after flashing.
         //
-        // El reinicio del OTA pasa dentro de ArduinoOTA.handle() y nunca pasa por
-        // serviceMode_exit(), así que el acumulador queda con lo consumido antes
-        // del flash. Si esta sesión venía de arrastre —por ejemplo 10 min de un
-        // presupuesto de 15— la sesión post-flash nacería con casi nada y el nodo
-        // se dormiría antes de publicar el service_mode_active con la versión
-        // nueva, que es de donde la UI saca la verificación del OTA.
+        // The OTA restart happens inside ArduinoOTA.handle() and never goes
+        // through serviceMode_exit(), so the accumulator is left with
+        // whatever was consumed before the flash. If this session carried
+        // over from before —say 10 min out of a 15 min budget— the
+        // post-flash session would start with almost nothing and the node
+        // would go back to sleep before publishing the service_mode_active
+        // with the new version, which is where the UI gets its OTA
+        // verification from.
         //
-        // No reabre el ciclo infinito que motivó el acumulador: esto solo corre
-        // cuando alguien flasheó a propósito, y el deadline del backend sigue
-        // acotando el total pase lo que pase.
+        // This doesn't reopen the infinite loop that motivated the
+        // accumulator in the first place: this only runs when someone
+        // deliberately flashed, and the backend's deadline still bounds the
+        // total no matter what.
         rtc_serviceElapsedSec = 0;
-        // Acá había un esp_ota_mark_app_valid_cancel_rollback(). Se sacó porque no
-        // hacía lo que decía el comentario: onEnd corre en el firmware VIEJO, antes
-        // del reinicio, así que marcaba válida la partición que ya estaba corriendo
-        // y no la recién escrita. Y la función cancela el rollback, no lo habilita.
+        // There used to be an esp_ota_mark_app_valid_cancel_rollback() here.
+        // It was removed because it didn't do what the comment said: onEnd
+        // runs on the OLD firmware, before the restart, so it was marking
+        // the partition already running as valid, not the freshly written
+        // one. And the function cancels the rollback, it doesn't enable it.
         //
-        // La imagen nueva la valida el core de Arduino en initArduino(), antes de
-        // setup(): si la partición está en ESP_OTA_IMG_PENDING_VERIFY llama a
-        // verifyOta() —weak, devuelve true por defecto— y la marca válida. Ver
-        // esp32-hal-misc.c. O sea que hoy toda imagen que bootee se acepta sin
-        // chequear nada; ver la nota sobre verifyOta() en aprendizajes_y_roadmap.md.
+        // The new image is validated by the Arduino core in initArduino(),
+        // before setup(): if the partition is in ESP_OTA_IMG_PENDING_VERIFY
+        // it calls verifyOta() —weak, returns true by default— and marks it
+        // valid. See esp32-hal-misc.c. So today every image that boots gets
+        // accepted with no checks at all; see the note on verifyOta() in
+        // aprendizajes_y_roadmap.md.
     });
 
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        LOG_V("OTA progreso: %u%%", (progress / (total / 100)));
+        LOG_V("OTA progress: %u%%", (progress / (total / 100)));
     });
 
     ArduinoOTA.onError([](ota_error_t error) {
         otaSuccess = false;
         LOG_E("OTA error [%u]", error);
-        // No reiniciar — volver al loop del service mode para seguir esperando
+        // Do not restart — return to the service mode loop to keep waiting
     });
 
     ArduinoOTA.begin();
-    LOG_V("ArduinoOTA listo — hostname: %s", OTA_HOSTNAME);
+    LOG_V("ArduinoOTA ready — hostname: %s", OTA_HOSTNAME);
 }
 
-// ─── API pública ──────────────────────────────────────────────────────────────
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 bool serviceMode_isActive() {
     return rtc_inServiceMode;
@@ -276,59 +284,63 @@ bool serviceMode_isActive() {
 
 void serviceMode_evaluate(PubSubClient& mqtt, const Command& cmd) {
     if (cmd.type == CommandType::MAINTENANCE) {
-        // Servidor pidió service mode
+        // Server requested service mode
         if (!rtc_inServiceMode) {
             rtc_serviceTimeoutMin = cmd.timeout_min;
             rtc_inServiceMode     = true;
-            // rtc_serviceElapsedSec NO se reinicia acá a propósito. Este camino se
-            // recorre tanto en el primer armado como al re-entrar después de una
-            // salida fallida (MQTT caído, sin poder limpiar el retenido), y desde
-            // acá no se distinguen. Reiniciarlo devolvería el presupuesto entero en
-            // cada caída, que es justamente el bug. Se pone en cero cuando la sesión
-            // cierra bien, en serviceMode_exit(); si quedó un resto de una sesión
-            // que nunca pudo cerrar, el próximo armado arranca con menos margen —
-            // conservador, que es el lado correcto para equivocarse.
-            LOG_V("Entrando en service mode (timeout: %d min, ya consumidos: %u s)",
+            // rtc_serviceElapsedSec is deliberately NOT reset here. This
+            // path is taken both on the first arming and on re-entering
+            // after a failed exit (MQTT down, unable to clear the retained
+            // command), and there's no way to tell them apart from here.
+            // Resetting it would hand back the full budget on every drop,
+            // which is exactly the bug. It's set to zero when the session
+            // closes cleanly, in serviceMode_exit(); if a remainder was left
+            // from a session that never managed to close, the next arming
+            // starts with less margin — conservative, which is the right
+            // side to be wrong on.
+            LOG_V("Entering service mode (timeout: %d min, already consumed: %u s)",
                   cmd.timeout_min, rtc_serviceElapsedSec);
         } else {
-            LOG_V("Continuando service mode (RTC persistido)");
+            LOG_V("Continuing service mode (persisted in RTC)");
         }
         serviceMode_run(mqtt, rtc_serviceTimeoutMin);
 
     } else if (rtc_inServiceMode) {
-        // Estábamos en service mode pero el comando ya no está (fue limpiado externamente)
-        // Ej: N8N limpió el topic por timeout del lado servidor
-        LOG_V("Service mode activo en RTC pero sin comando — salida limpia");
+        // We were in service mode but the command is no longer there (cleared externally)
+        // E.g.: N8N cleared the topic due to a server-side timeout
+        LOG_V("Service mode active in RTC but no command — clean exit");
         serviceMode_exit(mqtt, "cleared_by_server");
 
     }
-    // Si no hay comando y no estamos en service mode: flujo normal (no hace nada aquí)
+    // If there's no command and we're not in service mode: normal flow (does nothing here)
 }
 
 void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
-    LOG_V("=== SERVICE MODE ACTIVO (max %d min) ===", timeoutMin);
+    LOG_V("=== SERVICE MODE ACTIVE (max %d min) ===", timeoutMin);
 
-    // Solo el INA219 de sistema, sin encender rails — habilita el campo system_v
-    // de los heartbeats. Si falla, la sesión sigue igual: el campo se omite.
+    // Only the system INA219, without turning on any rails — enables the
+    // system_v field in heartbeats. If it fails, the session continues the
+    // same: the field is just omitted.
     if (!sensors_initSystemMonitor()) {
-        LOG_E("INA219 de sistema no respondió — heartbeats sin voltaje");
+        LOG_E("System INA219 did not respond — heartbeats without voltage");
     }
 
-    // Presupuesto absoluto: el timeout pedido menos lo ya consumido en sesiones
-    // anteriores que no pudieron cerrar. Sin esto cada reinicio estrenaba el
-    // timeout entero y el nodo podía quedar en ciclo indefinidamente.
+    // Absolute budget: the requested timeout minus what was already
+    // consumed in previous sessions that couldn't close. Without this every
+    // restart would get a brand new full timeout and the node could end up
+    // looping indefinitely.
     const uint32_t totalSec = (uint32_t)timeoutMin * 60;
     if (rtc_serviceElapsedSec >= totalSec) {
-        LOG_V("Presupuesto de service mode agotado (%u/%u s) — saliendo",
+        LOG_V("Service mode budget exhausted (%u/%u s) — exiting",
               rtc_serviceElapsedSec, totalSec);
         serviceMode_exit(mqtt, "timeout");
         return;
     }
     const uint32_t budgetMs = (totalSec - rtc_serviceElapsedSec) * 1000;
 
-    // remaining_sec informa el saldo TOTAL, no el de esta sesión: si el nodo se
-    // reinició, la UI tiene que ver el tiempo real que queda y no un contador que
-    // vuelve a arrancar de cero.
+    // remaining_sec reports the TOTAL balance, not this session's: if the
+    // node restarted, the UI needs to see the real time left, not a counter
+    // that starts back at zero.
     _publishStatus(mqtt, "service_mode_active", (int)(budgetMs / 1000));
     logging_write(LOG_SERVICE_ENTER, 0, (int16_t)(budgetMs / 1000));
     _setupOTA();
@@ -337,35 +349,37 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
     uint32_t lastHeartbeatMs = 0;
     const uint32_t HEARTBEAT_INTERVAL_MS = (uint32_t)SERVICE_MODE_HEARTBEAT_SEC * 1000;
 
-    // ── Keepalive largo para la sesión ────────────────────────────────────────
-    // El nodo llegó hasta acá con el keepalive del ciclo normal, que es corto a
-    // propósito para que el broker expire la sesión antes del próximo wake y no
-    // haya takeover por client-ID duplicado (ver connectMQTT en main.cpp). Acá el
-    // compromiso es el opuesto: la sesión dura minutos, ArduinoOTA.handle() puede
-    // bloquear decenas de segundos sin que el nodo mande nada, y el margen del
-    // broker es lo único que la sostiene. Takeover no hay: el nodo no se duerme
-    // en el medio.
+    // ── Long keepalive for the session ────────────────────────────────────────
+    // The node arrived here with the normal cycle's keepalive, which is
+    // short on purpose so the broker expires the session before the next
+    // wake and there's no takeover from a duplicate client ID (see
+    // connectMQTT in main.cpp). Here the trade-off is the opposite: the
+    // session lasts minutes, ArduinoOTA.handle() can block for tens of
+    // seconds without the node sending anything, and the broker's margin is
+    // the only thing holding it up. There's no takeover risk: the node
+    // doesn't go to sleep in the middle.
     //
-    // El valor que gobierna al broker es el que viajó en el CONNECT, así que
-    // cambiarlo obliga a reconectar. Va DESPUÉS del service_mode_active y del
-    // setup de OTA a propósito: de ese status sale la verificación del flasheo en
-    // la UI y no se puede arriesgar a demorarlo, y de acá en adelante el flasheo
-    // ya no depende de MQTT. Un solo intento y sin reintentos — si falla, el loop
-    // de abajo reconecta igual, y con el keepalive nuevo, que queda seteado en el
-    // cliente. En el camino de re-entrada tras el reinicio del OTA la conexión
-    // puede no existir (connectMQTT ignora su retorno ahí): entonces sólo queda
-    // seteado el valor y lo aplica _reconnectMqtt.
+    // The value that governs the broker is the one that traveled in the
+    // CONNECT, so changing it forces a reconnect. It goes AFTER
+    // service_mode_active and the OTA setup on purpose: the UI's flash
+    // verification comes from that status and can't risk being delayed, and
+    // from here on the flash no longer depends on MQTT. A single attempt
+    // with no retries — if it fails, the loop below reconnects anyway, and
+    // with the new keepalive, which stays set on the client. On the
+    // re-entry path after an OTA restart the connection may not exist
+    // (connectMQTT ignores its return value there): in that case only the
+    // value stays set and _reconnectMqtt applies it.
     mqtt.setKeepAlive(MQTT_KEEPALIVE_SERVICE_SEC);
     if (mqtt.connected()) {
         mqtt.disconnect();
         if (!mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
-            LOG_E("Reconexión con keepalive largo falló (%d) — el loop reintenta", mqtt.state());
+            LOG_E("Reconnect with long keepalive failed (%d) — the loop will retry", mqtt.state());
         }
     }
 
-    // Las suscripciones y el callback van después del bloque de arriba a propósito:
-    // una reconexión los pierde, y este orden los deja bien puestos tanto si se
-    // reconectó como si no.
+    // The subscriptions and the callback go after the block above on
+    // purpose: a reconnect loses them, and this order leaves them correctly
+    // set whether it reconnected or not.
     _cmdCleared    = false;
     _logReqPending = false;
     mqtt.subscribe(TOPIC_CMD);
@@ -377,24 +391,24 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
         uint32_t elapsed = now - startMs;
         int      remaining = (int)((budgetMs - elapsed) / 1000);
 
-        // ── Condición de salida: timeout ──────────────────────────────────────
+        // ── Exit condition: timeout ────────────────────────────────────────────
         if (elapsed >= budgetMs) {
-            LOG_V("Timeout de service mode alcanzado");
+            LOG_V("Service mode timeout reached");
             serviceMode_exit(mqtt, "timeout", elapsed / 1000);
             return;
         }
 
-        // ── Condición de salida: servidor limpió el comando ───────────────────
+        // ── Exit condition: server cleared the command ────────────────────────
         if (_cmdCleared) {
             serviceMode_exit(mqtt, "cleared_by_server", elapsed / 1000);
             return;
         }
 
-        // ── OTA completado: ya se reinició en onEnd() ─────────────────────────
-        // Si llegamos aquí después del OTA, algo salió mal en el reinicio.
-        // No debería ocurrir, pero por seguridad:
+        // ── OTA complete: already restarted in onEnd() ────────────────────────
+        // If we reach here after the OTA, something went wrong with the restart.
+        // Shouldn't happen, but just in case:
         if (otaSuccess) {
-            LOG_V("OTA completado pero sin reinicio — forzando");
+            LOG_V("OTA complete but no restart happened — forcing one");
             ESP.restart();
         }
 
@@ -404,39 +418,39 @@ void serviceMode_run(PubSubClient& mqtt, int timeoutMin) {
             _publishStatus(mqtt, "service_mode_alive", remaining);
         }
 
-        // ── Mantener MQTT vivo ────────────────────────────────────────────────
-        // Reconectar en vez de abandonar. Abandonar era caro: la salida no podía
-        // limpiar el retenido con el broker caído, así que al despertar el nodo
-        // releía el comando y arrancaba una sesión nueva.
+        // ── Keep MQTT alive ────────────────────────────────────────────────────
+        // Reconnect instead of giving up. Giving up was expensive: the exit
+        // couldn't clear the retained command with the broker down, so on
+        // waking the node would read it again and start a new session.
         if (!mqtt.connected() && !_reconnectMqtt(mqtt)) {
             break;
         }
         mqtt.loop();
 
-        // ── Atender pedidos de log ────────────────────────────────────────────
-        // Acá y no en el callback: publicar desde adentro del callback de
-        // PubSubClient reentra en el buffer que se está leyendo.
+        // ── Serve log requests ─────────────────────────────────────────────────
+        // Here and not in the callback: publishing from inside PubSubClient's
+        // callback re-enters the buffer being read.
         if (_logReqPending) {
             _serveLogRequest(mqtt);
         }
 
-        // ── Manejar OTA ───────────────────────────────────────────────────────
+        // ── Handle OTA ────────────────────────────────────────────────────────
         ArduinoOTA.handle();
 
         delay(100);
     }
 
-    // Solo se llega acá si MQTT se cayó y no reconectó tras todos los reintentos.
-    // El tiempo consumido se acumula igual, así que la próxima entrada arranca con
-    // el saldo y no con el presupuesto entero.
+    // Only reaches here if MQTT dropped and failed to reconnect after every
+    // retry. The time consumed is still accumulated, so the next entry
+    // starts with the remaining balance, not the full budget.
     serviceMode_exit(mqtt, "mqtt_disconnected", (millis() - startMs) / 1000);
 }
 
 void serviceMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSec) {
-    LOG_V("Saliendo de service mode: %s (sesión: %u s)", reason, sessionSec);
+    LOG_V("Exiting service mode: %s (session: %u s)", reason, sessionSec);
 
-    // El motivo se codifica acá y su interpretación viaja en la plantilla del
-    // diccionario, así que el backend no necesita conocer estos strings.
+    // The reason is encoded here and its interpretation travels in the
+    // dictionary template, so the backend doesn't need to know these strings.
     uint8_t reasonCode = 0;
     if      (strcmp(reason, "timeout") == 0)           reasonCode = 1;
     else if (strcmp(reason, "cleared_by_server") == 0) reasonCode = 2;
@@ -445,28 +459,29 @@ void serviceMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSe
 
     rtc_inServiceMode = false;
 
-    // Acumular siempre, antes de saber si se va a poder cerrar limpio: si esta
-    // salida es por MQTT caído, el retenido sigue puesto y el nodo va a re-entrar,
-    // y tiene que hacerlo con el saldo y no con el presupuesto entero.
+    // Always accumulate, before knowing whether it will be possible to close
+    // cleanly: if this exit is due to MQTT being down, the retained command
+    // is still set and the node is going to re-enter, and it has to do so
+    // with the remaining balance, not the full budget.
     rtc_serviceElapsedSec += sessionSec;
 
-    // Limpiar comando retenido en broker (si MQTT está disponible)
+    // Clear the retained command on the broker (if MQTT is available)
     if (mqtt.connected()) {
         _clearRetainedCmd(mqtt);
         _publishStatus(mqtt, "service_mode_ended", -1, reason);
         mqtt.loop();
-        delay(200); // dar tiempo a que el broker procese los mensajes
+        delay(200); // give the broker time to process the messages
 
-        // Se logró limpiar el retenido, así que no puede haber re-entrada: la
-        // sesión terminó de verdad y el próximo armado arranca de cero.
+        // The retained command was successfully cleared, so there can be no
+        // re-entry: the session truly ended and the next arming starts from zero.
         rtc_serviceElapsedSec = 0;
         rtc_serviceTimeoutMin = SERVICE_MODE_DEFAULT_TIMEOUT_MIN;
     }
 
-    // Volver al ciclo normal
-    LOG_V("Entrando en deep sleep desde service_mode_exit");
-    // Este camino no pasa por goToDeepSleep(), así que apaga los INA219 por su
-    // cuenta — si no, una salida de service mode los dejaría convirtiendo.
+    // Return to the normal cycle
+    LOG_V("Entering deep sleep from service_mode_exit");
+    // This path doesn't go through goToDeepSleep(), so it turns off the
+    // INA219s on its own — otherwise a service mode exit would leave them converting.
     sensors_sleepMonitors();
     esp_deep_sleep((uint64_t)SLEEP_INTERVAL_SEC * 1000000ULL);
 }

@@ -3,41 +3,43 @@
 #include <PubSubClient.h>
 #include "command.h"
 
-// ─── Estado persistente en RTC memory ────────────────────────────────────────
-// Sobrevive al deep sleep y a reinicios por software.
-// Se pierde solo con power-off total (fallo de batería, etc.).
+// ─── State persisted in RTC memory ───────────────────────────────────────────
+// Survives deep sleep and software restarts.
+// Only lost on a full power-off (battery failure, etc.).
 extern RTC_DATA_ATTR bool     rtc_inServiceMode;
 extern RTC_DATA_ATTR int      rtc_serviceTimeoutMin;
 
-// Segundos de service mode ya consumidos, acumulados entre reinicios.
+// Seconds of service mode already consumed, accumulated across restarts.
 //
-// Existe porque el timeout no acotaba nada: si se caía MQTT, el nodo salía por
-// deep sleep sin poder limpiar el comando retenido, y al despertar lo volvía a
-// leer y arrancaba una sesión nueva con el timeout entero. Con un enlace que se
-// cae seguido eso se repite indefinidamente — el nodo queda despierto a 50-140 mA
-// en ciclos de un minuto sin que nada lo corte. Acumulando acá, un reinicio retoma
-// el saldo en vez de estrenar presupuesto.
+// Exists because the timeout bounded nothing: if MQTT dropped, the node
+// would exit via deep sleep unable to clear the retained command, and on
+// waking it would read it again and start a brand new session with the full
+// timeout. With a link that drops often, that repeats indefinitely — the
+// node stays awake at 50-140 mA in one-minute cycles with nothing cutting it
+// off. By accumulating here, a restart picks up the remaining balance
+// instead of getting a fresh budget.
 //
-// Se pone en cero solo cuando la sesión termina de verdad, o sea cuando se logró
-// limpiar el retenido y por lo tanto no puede haber re-entrada.
+// Only reset to zero when the session truly ends, i.e. when the retained
+// command was successfully cleared and therefore no re-entry can happen.
 extern RTC_DATA_ATTR uint32_t rtc_serviceElapsedSec;
 
-// ─── API pública ──────────────────────────────────────────────────────────────
+// ─── Public API ───────────────────────────────────────────────────────────────
 
-// Llama al despertar ANTES de tomar decisiones.
-// Evalúa el comando recibido + el estado RTC para determinar
-// si corresponde entrar/continuar/salir del modo servicio.
+// Call on waking BEFORE making any decisions.
+// Evaluates the received command + the RTC state to determine
+// whether to enter/continue/exit service mode.
 void serviceMode_evaluate(PubSubClient& mqtt, const Command& cmd);
 
-// Retorna true si el dispositivo está actualmente en modo servicio
-// (puede ser de un ciclo anterior persistido en RTC).
+// Returns true if the device is currently in service mode
+// (may be from a previous cycle persisted in RTC).
 bool serviceMode_isActive();
 
-// Bloquea hasta que se reciba un firmware OTA, se agote el timeout,
-// o el servidor limpie el comando. Llama a goToDeepSleep() al finalizar.
+// Blocks until an OTA firmware is received, the timeout runs out,
+// or the server clears the command. Calls goToDeepSleep() when done.
 void serviceMode_run(PubSubClient& mqtt, int timeoutMin);
 
-// Limpia el estado RTC y publica el topic retenido vacío para limpiar el broker.
-// sessionSec son los segundos que duró esta sesión, que se suman al acumulado de
-// RTC para que el timeout siga siendo absoluto si el nodo vuelve a entrar.
+// Clears the RTC state and publishes an empty payload to the retained topic
+// to clear the broker. sessionSec is how many seconds this session lasted,
+// which get added to the RTC accumulator so the timeout stays absolute if
+// the node enters again.
 void serviceMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSec = 0);
