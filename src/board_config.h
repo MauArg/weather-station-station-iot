@@ -7,7 +7,7 @@
 //   // LED
 //   #define LED_BUILTIN 8
   
-//   // I2C para BMP180
+//   // I2C for BMP180
 //   #define I2C_SDA 4
 //   #define I2C_SCL 5
   
