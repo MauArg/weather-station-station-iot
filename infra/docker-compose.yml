@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "1883:1883"     # MQTT
-      # - "9001:9001"   # WebSockets (descomentar si lo necesitás en el futuro)
+      # - "9001:9001"   # WebSockets (uncomment if needed in the future)
     volumes:
       - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/data:/mosquitto/data
@@ -18,7 +18,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # ─── Próximos servicios (descomentar cuando corresponda) ──────────────────────
+  # ─── Upcoming services (uncomment when needed) ────────────────────────────────
 
   # influxdb:
   #   image: influxdb:2
