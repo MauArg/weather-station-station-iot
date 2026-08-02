@@ -2,63 +2,65 @@
 #include <Arduino.h>
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Sistema de logs del nodo — ver ../logging_system_design.md
+// Node logging system — see ../logging_system_design.md
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// NO es LOG_LEVEL. Aquel es compile-time y sale por Serial; éste se activa en
-// runtime por comando MQTT y se recupera a distancia. Va compilado en el build
-// de producción a propósito: si quedara detrás de LOG_LEVEL>0 habría que
-// flashear un build de debug para debuggear, que es justo lo que este sistema
-// existe para evitar.
+// This is NOT LOG_LEVEL. That one is compile-time and goes out over Serial;
+// this one is turned on at runtime via MQTT command and retrieved remotely.
+// It's compiled into the production build on purpose: if it stayed behind
+// LOG_LEVEL>0, debugging would require flashing a debug build, which is
+// exactly what this system exists to avoid.
 //
-// El buffer vive en RTC memory porque el deep sleep borra la RAM normal. El
-// ESP32-C3 tiene 8176 B de RTC memory en total y nada más (memory.ld), así que
-// la ventana de captura se mide en horas, no en días.
+// The buffer lives in RTC memory because deep sleep wipes normal RAM. The
+// ESP32-C3 has 8176 B of RTC memory total and nothing more (memory.ld), so
+// the capture window is measured in hours, not days.
 //
-// Concretamente vive en `.rtc_noinit` y NO en `.rtc.data`. La diferencia importa:
-// según esp_attr.h, RTC_DATA_ATTR conserva el valor "during a deep sleep / wake
-// cycle" mientras que RTC_NOINIT_ATTR lo conserva "after restart or during a deep
-// sleep / wake cycle". Con RTC_DATA_ATTR, un panic, un watchdog, una brownout o un
-// comando reboot borraban la captura entera y además dejaban el nivel en 0 — o sea
-// que la captura se desarmaba sola, en silencio, justo en los eventos que más
-// interesa investigar. Peor: la entry LOG_BOOT con esp_reset_reason(), que existe
-// para distinguir brownout de panic, no llegaba a escribirse nunca porque el nivel
-// ya era 0 cuando setup() la intentaba.
+// Specifically it lives in `.rtc_noinit` and NOT in `.rtc.data`. The
+// difference matters: per esp_attr.h, RTC_DATA_ATTR preserves the value
+// "during a deep sleep / wake cycle" while RTC_NOINIT_ATTR preserves it
+// "after restart or during a deep sleep / wake cycle". With RTC_DATA_ATTR, a
+// panic, a watchdog, a brownout or a reboot command would wipe the entire
+// capture and also leave the level at 0 — meaning the capture would disarm
+// itself, silently, on exactly the events most worth investigating. Worse:
+// the LOG_BOOT entry with esp_reset_reason(), which exists to distinguish a
+// brownout from a panic, would never get written because the level was
+// already 0 by the time setup() tried it.
 //
-// El precio de `.rtc_noinit` es que arranca con basura en un power-on, así que el
-// estado se valida contra una palabra mágica y su geometría en logging_begin().
+// The cost of `.rtc_noinit` is that it starts out garbage on power-on, so
+// the state is validated against a magic word and its geometry in logging_begin().
 
-// ─── Códigos ─────────────────────────────────────────────────────────────────
-// Fuente única: este X-macro genera el enum, la tabla de niveles y las
-// plantillas de texto, así que código y texto no pueden desincronizarse.
+// ─── Codes ────────────────────────────────────────────────────────────────────
+// Single source of truth: this X-macro generates the enum, the level table
+// and the text templates, so code and text can never drift out of sync.
 //
-// El nodo es la autoridad del diccionario: el backend recibe (code, a, b) más
-// la plantilla y sustituye, sin saber nada del dominio. Por eso reordenar o
-// agregar códigos acá es seguro — el diccionario viaja junto a la versión de
-// firmware, y el backend lo cachea por esa clave.
+// The node is the authority on the dictionary: the backend receives
+// (code, a, b) plus the template and substitutes, without knowing anything
+// about the domain. That's why reordering or adding codes here is safe — the
+// dictionary travels along with the firmware version, and the backend caches
+// it by that key.
 //
-// Nivel: la entry se escribe si el nivel activo es >= al nivel del código.
-//   1 = anomalías    2 = resumen por ciclo    3 = verboso
+// Level: the entry is written if the active level is >= the code's level.
+//   1 = anomalies    2 = per-cycle summary    3 = verbose
 //
-//                 nombre     nivel  plantilla
-// `b` es int16_t (tiene que poder llevar RSSI negativo), así que las duraciones
-// largas van en unidades de 100 ms: un ciclo que falla la conexión puede quemar
-// 45 s y 45000 no entra en int16.
+//                 name       level  template
+// `b` is int16_t (it has to be able to carry negative RSSI), so long
+// durations go in units of 100 ms: a cycle that fails to connect can burn
+// 45 s, and 45000 doesn't fit in an int16.
 #define LOG_CODES(X) \
-    X(LOG_CAPTURE_START,  1, "captura iniciada - nivel %a, capacidad %b eventos") \
-    X(LOG_BOOT,           2, "boot - reset=%b (8=wake de deep sleep; cualquier otro reinicio el boot_count)") \
-    X(LOG_WIFI_TRY,       3, "wifi intento %a (canal cacheado %b, 0=scan)") \
-    X(LOG_WIFI_OK,        2, "wifi ok - intento %a, rssi %b dBm") \
-    X(LOG_WIFI_FAIL,      1, "wifi timeout - intento %a, status %b") \
-    X(LOG_WIFI_GIVEUP,    1, "wifi agoto los reintentos - %b x100ms perdidos") \
-    X(LOG_MQTT_OK,        2, "mqtt conectado en %b ms") \
-    X(LOG_MQTT_FAIL,      1, "mqtt rechazado - state %b") \
-    X(LOG_CMD_RX,         3, "comando retenido - tipo %a (1=maintenance 2=reboot 3=config 4=calibrate 5=ping 6=log_on)") \
-    X(LOG_PUBLISH_OK,     2, "telemetria publicada - %b B") \
-    X(LOG_PUBLISH_FAIL,   1, "publish fallo - %b B, causa %a (1=no entra en el buffer, 2=conexion caida)") \
-    X(LOG_SERVICE_ENTER,  2, "entrando a service mode - %b s de presupuesto") \
-    X(LOG_SERVICE_EXIT,   2, "saliendo de service mode - motivo %a (1=timeout 2=servidor 3=mqtt caido), %b s") \
-    X(LOG_SLEEP,          2, "durmiendo - %b x100ms despierto")
+    X(LOG_CAPTURE_START,  1, "capture started - level %a, capacity %b events") \
+    X(LOG_BOOT,           2, "boot - reset=%b (8=deep sleep wake; any other value resets boot_count)") \
+    X(LOG_WIFI_TRY,       3, "wifi attempt %a (cached channel %b, 0=scan)") \
+    X(LOG_WIFI_OK,        2, "wifi ok - attempt %a, rssi %b dBm") \
+    X(LOG_WIFI_FAIL,      1, "wifi timeout - attempt %a, status %b") \
+    X(LOG_WIFI_GIVEUP,    1, "wifi exhausted retries - %b x100ms lost") \
+    X(LOG_MQTT_OK,        2, "mqtt connected in %b ms") \
+    X(LOG_MQTT_FAIL,      1, "mqtt rejected - state %b") \
+    X(LOG_CMD_RX,         3, "retained command - type %a (1=maintenance 2=reboot 3=config 4=calibrate 5=ping 6=log_on)") \
+    X(LOG_PUBLISH_OK,     2, "telemetry published - %b B") \
+    X(LOG_PUBLISH_FAIL,   1, "publish failed - %b B, cause %a (1=doesn't fit in buffer, 2=connection dropped)") \
+    X(LOG_SERVICE_ENTER,  2, "entering service mode - %b s budget") \
+    X(LOG_SERVICE_EXIT,   2, "exiting service mode - reason %a (1=timeout 2=server 3=mqtt down), %b s") \
+    X(LOG_SLEEP,          2, "sleeping - %b x100ms awake")
 
 enum LogCode : uint8_t {
 #define X(name, level, tmpl) name,
@@ -67,64 +69,64 @@ enum LogCode : uint8_t {
     LOG_CODE_COUNT
 };
 
-// ─── Entry ───────────────────────────────────────────────────────────────────
-// 8 bytes, sin punteros ni strings: escribirla es un memcpy. La captura es
-// energéticamente gratis — el único costo real del sistema es el dump, que es
-// operador-iniciado.
+// ─── Entry ────────────────────────────────────────────────────────────────────
+// 8 bytes, no pointers or strings: writing one is a memcpy. Capturing is
+// energetically free — the only real cost in the system is the dump, which
+// is operator-initiated.
 //
-// No hay timestamp porque el nodo no tiene reloj y millis() se reinicia en cada
-// ciclo. Se guarda boot_count + ms y el backend reconstruye la hora de pared
-// anclándose en los ciclos que sí publicaron telemetría.
+// There is no timestamp because the node has no clock and millis() resets on
+// every cycle. boot_count + ms are stored, and the backend reconstructs
+// wall-clock time by anchoring on the cycles that did publish telemetry.
 struct __attribute__((packed)) LogEntry {
-    uint16_t boot;   // boot_count truncado a 16 bits — 45 días a 60 s
-    uint16_t ms;     // ms desde el arranque del ciclo (satura en 65535)
+    uint16_t boot;   // boot_count truncated to 16 bits — 45 days at 60 s
+    uint16_t ms;     // ms since the cycle started (saturates at 65535)
     uint8_t  code;   // LogCode
-    uint8_t  a;      // argumento chico: nro de intento, tipo de comando, motivo
-    int16_t  b;      // argumento grande: RSSI, bytes, duración en ms
+    uint8_t  a;      // small argument: attempt number, command type, reason
+    int16_t  b;      // large argument: RSSI, bytes, duration in ms
 };
 
-static_assert(sizeof(LogEntry) == 8, "LogEntry define el formato de cable — "
-                                     "si cambia de tamaño, el backend no puede decodificar");
+static_assert(sizeof(LogEntry) == 8, "LogEntry defines the wire format — "
+                                     "if its size changes, the backend cannot decode it");
 
 // ─── API ─────────────────────────────────────────────────────────────────────
 
-// Valida el estado que quedó en `.rtc_noinit` y lo reinicia si no es nuestro.
+// Validates the state left in `.rtc_noinit` and resets it if it's not ours.
 //
-// TIENE que llamarse al principio de setup(), antes del primer logging_write():
-// en un power-on esa memoria arranca con basura, y un `rtc_logHead` basura
-// escribiría fuera del ring. Es idempotente y cuesta unas pocas comparaciones.
+// MUST be called at the start of setup(), before the first logging_write():
+// on power-on that memory starts out garbage, and a garbage `rtc_logHead`
+// would write outside the ring. Idempotent and costs a few comparisons.
 void logging_begin();
 
-// Registra un evento. Barata y segura de llamar siempre: si el logging está
-// apagado o el código está por encima del nivel activo, retorna sin hacer nada.
+// Logs an event. Cheap and safe to call always: if logging is off or the
+// code is above the active level, it returns without doing anything.
 //
-// NO es segura desde una ISR: la actualización de head/count/dropped no es
-// atómica, así que una interrupción a mitad de camino puede dejar el ring
-// inconsistente. Importa porque `config.h` tiene pendiente el conteo por
-// interrupción del anemómetro y el pluviómetro — si esos handlers alguna vez
-// quieren loguear, hay que encolar y escribir desde el hilo principal.
+// NOT safe from an ISR: the head/count/dropped update is not atomic, so an
+// interrupt partway through can leave the ring inconsistent. This matters
+// because `config.h` has pending interrupt-based counting for the
+// anemometer and rain gauge — if those handlers ever want to log, they need
+// to queue and write from the main thread.
 void logging_write(uint8_t code, uint8_t a, int16_t b);
 
-// Activa (level 1-3) o desactiva (level 0). Limpia el ring siempre: activar
-// significa empezar una captura nueva, no continuar la anterior.
-// `entries` sólo puede ACHICAR el ring — la RTC memory no se redimensiona en
-// runtime. 0 usa la capacidad compilada entera.
+// Turns it on (level 1-3) or off (level 0). Always clears the ring: turning
+// it on means starting a new capture, not continuing the previous one.
+// `entries` can only SHRINK the ring — RTC memory doesn't get resized at
+// runtime. 0 uses the full compiled-in capacity.
 void logging_configure(uint8_t level, uint16_t entries);
 
 bool     logging_isActive();
 uint8_t  logging_level();
-uint16_t logging_count();      // entries vivas
-uint32_t logging_dropped();    // perdidas por wraparound — distingue una
-                               // captura completa de una truncada
+uint16_t logging_count();      // live entries
+uint32_t logging_dropped();    // lost to wraparound — distinguishes a
+                               // complete capture from a truncated one
 uint16_t logging_pageCount();
 void     logging_clear();
 
-// Codifica una página en base64 dentro de `out` (queda null-terminated).
-// Las entries salen en orden cronológico, no en orden físico del ring.
-// Devuelve false si la página no existe o no entra en el buffer.
+// Encodes a page in base64 into `out` (ends up null-terminated).
+// Entries come out in chronological order, not the ring's physical order.
+// Returns false if the page doesn't exist or doesn't fit in the buffer.
 bool logging_encodePage(uint16_t page, char* out, size_t outSize, uint16_t* outEntries);
 
-// Diccionario — el backend lo pide una vez por versión de firmware.
+// Dictionary — the backend requests it once per firmware version.
 uint8_t     logging_codeCount();
 const char* logging_codeName(uint8_t code);
 const char* logging_codeTemplate(uint8_t code);
