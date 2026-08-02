@@ -84,7 +84,70 @@ Reconciliado con el estado real al 2026-07-11 (el snapshot original venía del p
 - ⏳ **Modos adaptativos de firmware** (día/noche por voltaje solar, tiers de energía por voltaje de batería) — **verificado 2026-07-29: no está implementado.** `src/battery.h` existe pero está vacío (0 bytes), `SLEEP_INTERVAL_SEC` es fijo, y `sensors_railsOn()` enciende los dos rails incondicionalmente (el TODO sigue ahí). Los umbrales de `componentes_y_conexiones.md` son diseño en papel. **Corrección de premisa**: los tiers no ahorran en deep sleep — GPIO7/GPIO8 no son RTC GPIOs en el ESP32-C3, así que al dormir quedan sin drive y el pull-down de 9,9 kΩ corta ambos rails solo. El ahorro real está en T3/T4, que cambian el intervalo de sleep.
 - ✅ **Bajo consumo — dos fixes en campo (2026-07-29)**: INA219 en power-down entre ciclos (`1.4.0`) y warmup del DHT22 en paralelo con la red (`1.5.0`). Ver `../STATUS.md` → "Power management".
 - ⏳ **Calibración de lluvia en Grafana** — `rain_wet_ref=0.3` sigue siendo un placeholder, falta dato real de lluvia intensa.
+- ⏳ **Medir el consumo de reposo con multímetro** — ~3,2 mA de los 5,10 mA totales están sin explicar (63% del presupuesto). No hay firmware que lo resuelva: el INA219 se apaga al dormir. **Es la medición de mayor valor pendiente.** Ver `componentes_y_conexiones.md`.
+- ⏳ **Integrar la energía de la ventana activa en el firmware** (`active_mAs` + `awake_ms` en el payload, promediado por hardware del INA219) — acordado 2026-08-02, sin empezar. Ver la sección dedicada más abajo. Hacerlo **después** de medir el reposo.
 - ❓ **Alcance de WiFi** — faltaban ~5m de cobertura; se subió la potencia de transmisión del TP-Link AX3000 a "High" como primer intento, resultado sin confirmar en esta sesión.
+
+---
+
+## Medir la energía de la ventana activa en vez de una muestra suelta (acordado 2026-08-02, sin empezar)
+
+**Qué está mal hoy.** `system_mW` es **una** lectura del INA219 de 532 µs tomada en un punto arbitrario de la ventana despierta de ~2,3 s. Cae aleatoriamente dentro o fuera del burst de transmisión de WiFi, así que es un pico y no un promedio — cubre el **0,02%** de la ventana. Sirve para diagnosticar el sag; no sirve para presupuestar energía.
+
+Eso rompió cosas río abajo: el balance energético del dashboard restaba ese pico (continuo en apariencia) contra la potencia del panel, que sí es continua, y daba déficit el 56% del día con buena luz. Se resolvió del lado del backend cambiando el medidor por un estado derivado (ver `../STATUS.md` → 1.2.0), pero **el dato crudo sigue siendo un pico**.
+
+### Por qué va en el nodo y no en el backend
+
+La regla del proyecto es que el cómputo vive en el backend — el punto de rocío se calcula ahí, no en el nodo, aunque el ESP32 podría. **Esto no la viola**, y la distinción importa:
+
+- El punto de rocío es **derivación**: temperatura y humedad viajan enteras en la telemetría, así que el backend tiene toda la información. Se calcula ahí para poder corregir la fórmula sin reflashear.
+- La energía de la ventana activa es **adquisición**: la dinámica sub-segundo del burst **no existe en la telemetría**. El nodo publica una muestra; ninguna lógica en el backend recupera lo que nunca se transmitió.
+
+Enunciada mejor, la regla es **el nodo es dueño de la adquisición, el backend de la interpretación**. Integrar al ritmo de muestreo que sólo el nodo tiene es adquisición — la misma categoría que "leer el INA219", sólo que 30 veces en vez de una.
+
+(Nota: el nodo ya calcula `pressure_qnh`, que sí es derivación pura. La regla ya se aplica con flexibilidad.)
+
+### Qué publicar
+
+**La integral y la ventana por separado, no el promedio ya masticado:**
+
+| campo | qué es |
+|---|---|
+| `active_mAs` (o mWh) | carga/energía integrada sobre la ventana despierta |
+| `awake_ms` | cuánto duró esa ventana |
+| `system_mW` | **se mantiene** — el instantáneo sigue sirviendo para el sag |
+
+Con esos dos el backend calcula promedio, ciclo de trabajo y mWh/día, y puede cambiar de criterio sin reflashear. Si el nodo manda sólo "el promedio", se pierde la capacidad de recalcular — que es justo la razón por la que el punto de rocío vive en el backend.
+
+**Beneficio concreto**: hoy el ciclo de trabajo (3,6%) es una constante hardcodeada que ya cambió entre firmwares, y por eso el backend se negó a usarla para prorratear. Con `awake_ms` en el payload esa corrección pasa a ser honesta.
+
+Presupuesto de payload: hay ~170 B de margen sobre 741 B, así que entran de sobra.
+
+### Promediado por hardware del INA219
+
+El registro de configuración (`0x00`) tiene dos campos de ADC independientes, **BADC** (bits 10-7, bus) y **SADC** (bits 6-3, shunt), con la misma codificación:
+
+| bits | modo | conversión |
+|---|---|---|
+| `0011` | 12 bit, 1 muestra | 532 µs ← **lo que corre hoy** |
+| `1101` | 32 muestras | 17,02 ms |
+| `1111` | **128 muestras** | **68,10 ms** |
+
+El chip promedia internamente; se lee un registro y sale la media. Cero costo de CPU.
+
+**Lo que lo vuelve realmente útil**: en modo continuo el INA219 convierte de corrido. Leyendo cada ~70 ms durante los 2,3 s despierto salen **~33 promedios consecutivos que no se solapan y cubren casi el 100% de la ventana**. Eso no es "tomar varias muestras": es una integral completa.
+
+**Obstáculos conocidos**, en orden de fastidio:
+
+1. `Adafruit_INA219 @ 1.2.1` **no expone el promediado**. Los `setCalibration_*()` arman el registro con `12BIT_1S_532US` hardcodeado. Hay que escribir el registro `0x00` por `Wire` **después** de llamar a `setCalibration_*()`, o el calibrado lo pisa. El header define constantes tipo `INA219_CONFIG_SADCRES_12BIT_128S_69MS` — **verificar los nombres exactos en el header instalado**, no están confirmados.
+2. Durante esa ventana el ESP32 está ocupado con WiFi. Un loop bloqueante de 2,3 s no es viable. Salidas: leer en los puntos de transición (antes de WiFi, tras conectar, tras publicar, antes de dormir) acumulando `P × Δt`, o disparar las lecturas desde un timer.
+3. Subir el tiempo de conversión alarga el `sensors_read()`; medir el impacto sobre la ventana despierta, que es justamente lo que se está tratando de no inflar.
+
+### ⚠️ Advertencia de prioridad
+
+Esto instrumenta **44,7 mAh/día** (la ventana activa). Los otros **77,7 mAh/día** — el 63% del presupuesto — están sin instrumentar y sin explicar; ver `componentes_y_conexiones.md` → "El reposo pesa más que la ventana activa". Y el INA219 **no puede** medirlos, porque el propio firmware lo pone en power-down al dormir.
+
+**Antes de encarar esto conviene medir el reposo con multímetro.** Es cinco minutos y contesta la mitad grande del presupuesto.
 
 ---
 
