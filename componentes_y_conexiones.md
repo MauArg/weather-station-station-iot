@@ -603,9 +603,19 @@ Hembra en placa auxiliar (fila 1, cols 7–18).
 
 \- \*\*GPIO9 reservado\*\* — es el botón BOOT físico del ESP32-C3 SuperMini. No conectar.
 
-\- \*\*Módulos Sunfounder: desoldar LEDs\*\* antes de montar en PCB — BMP180 (ya hecho), DS18B20, DHT11, fotoresistor (verificar si tiene). \*\*Los módulos INA219 no tienen LED de alimentación\*\* — verificado el 2026-07-29. Importaba porque cuelgan del bus 3V3, que sigue vivo durante el deep sleep: un LED de 1-3 mA por módulo habría consumido más que todo el resto del sistema junto, y no hay firmware que lo apague.
+\- \*\*Módulos Sunfounder: desoldar LEDs\*\* antes de montar en PCB — BMP180 \*\*(hecho)\*\*, \*\*DS18B20 (hecho)\*\*, DHT11, fotoresistor (verificar si tiene). \*\*Los módulos INA219 no tienen LED de alimentación\*\* — verificado el 2026-07-29. \*\*El LED del propio ESP32-C3 SuperMini tampoco está activo\*\* — desoldado (2026-08-02). Importaba porque cuelgan del bus 3V3, que sigue vivo durante el deep sleep: un LED de 1-3 mA por módulo habría consumido más que todo el resto del sistema junto, y no hay firmware que lo apague.
 
-\- \*\*Consumo activo medido: 51,2 mA\*\* (mediana del INA219 de sistema sobre 59 muestras de campo, 2026-07-29), con la ventana despierta en 3,3 s por ciclo antes del firmware `1.5.0`. La cifra de ~100 mA que circulaba por los documentos estaba 2× alta. El consumo en deep sleep sigue \*\*sin medir\*\* — el INA219 sólo muestrea con el nodo despierto.
+  \*\*Los LEDs quedan entonces descartados como fuente del consumo de reposo\*\* (ver el punto siguiente). El DHT11 y el fotorresistor cuelgan de Rail B, que se apaga al dormir, así que aunque tuvieran LED no cuentan.
+
+\- \*\*Consumo activo medido: 51,2 mA\*\* (mediana del INA219 de sistema sobre 59 muestras de campo, 2026-07-29), con la ventana despierta en 3,3 s por ciclo antes del firmware `1.5.0`. La cifra de ~100 mA que circulaba por los documentos estaba 2× alta. El consumo en deep sleep sigue \*\*sin medir directamente\*\* — el INA219 sólo muestrea con el nodo despierto, y además el firmware lo pone en power-down al dormir, así que \*\*no hay cambio de firmware que pueda resolverlo\*\*: hace falta un multímetro en serie con la batería.
+
+\- ⚠️ \*\*El reposo pesa más que la ventana activa — estimado, sin medir (2026-08-02).\*\* Estimado indirectamente desde la caída de tensión de la batería durante la noche, que integra todo el consumo porque no entra carga: mediana de \*\*5,10 mA\*\* de consumo medio total sobre 5 noches. La ventana activa explica \*\*1,86 mA\*\* (51,2 mA × 3,64% de ciclo de trabajo), así que quedan \*\*~3,2 mA sin explicar, el 63% del total\*\*. En mAh/día: activo 44,7 · resto 77,7 · \*\*total 122,4\*\*.
+
+  \*\*Caveats\*\*: la conversión volts→mAh usa la curva de SoC del backend, que es un indicador y no una contabilidad; y la temperatura baja de noche, lo que sube la resistencia interna, así que parte de la caída puede ser térmica y no consumo. Aun con un factor 2 de error sigue siendo mA, no µA.
+
+  \*\*Qué queda como sospechoso\*\*, ahora que los LEDs están descartados: el \*\*reposo del step-up boost\*\*, que tiene que estar siempre encendido porque alimenta al ESP32 que despierta (los módulos tipo MT3608 están en 0,5-2 mA y empeoran a carga liviana), más el regulador propio de la SuperMini. Los dos INA219 en power-down son ~12 µA y no explican nada.
+
+  \*\*Pendiente\*\*: medirlo con multímetro en serie con la batería, con el nodo dormido, y después el reposo del boost solo con el ESP32 desconectado. Es la medición de mayor valor pendiente del proyecto — decide si tiene sentido optimizar la ventana activa (44,7 mAh/día) o el reposo (77,7 mAh/día).
 
 \- \*\*Los dos INA219 se apagan entre ciclos desde el firmware `1.4.0`\*\* (`sensors_sleepMonitors()`, modo power-down ~6 µA contra ~0,7-1 mA en conversión continua). Cuelgan del bus 3V3 siempre alimentado, así que antes convertían los ~57 s por ciclo en que nadie los lee. El power-down apaga el ADC del chip pero \*\*no abre el shunt\*\*, así que la carga solar por el CN3791 no se ve afectada.
 
