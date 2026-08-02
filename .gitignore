@@ -1,9 +1,9 @@
-# Credenciales — nunca versionar
+# Credentials — never version
 .env
 mosquitto/config/passwd
 secrets.ini
 
-# Datos persistidos por los contenedores
+# Data persisted by the containers
 mosquitto/data/
 mosquitto/log/
 influxdb/data/
