@@ -1,11 +1,12 @@
-"""Cruza el sniffer 802.11 con las llegadas de telemetría al broker.
+"""Cross-references the 802.11 sniffer with telemetry arrivals at the broker.
 
-La prueba de la hipótesis del enlace asimétrico: si la pérdida es falta de margen
-de subida, los ciclos perdidos tienen que mostrar peor RSSI del nodo medido EN EL
-AP y/o más reintentos que los que llegan. Si salen indistinguibles, el margen es
-malo siempre y lo que decide un ciclo es otra cosa.
+The test for the asymmetric-link hypothesis: if the loss is a lack of
+uplink margin, lost cycles have to show worse node RSSI as measured AT THE
+AP and/or more retries than the ones that arrive. If they come out
+indistinguishable, the margin is bad all the time and something else
+decides a given cycle.
 
-Uso: python crossref.py sniffer-long.log longrun.ndjson
+Usage: python crossref.py sniffer-long.log longrun.ndjson
 """
 import json
 import re
@@ -18,9 +19,9 @@ probe_path = sys.argv[2] if len(sys.argv) > 2 else "longrun.ndjson"
 
 NODE = "80f1b26df9fc"
 
-# ── Tramas del sniffer ───────────────────────────────────────────────────────
-# La salida trae cajas Unicode que el serial mastica, así que se ancla en lo que
-# es estable: hora del host, millis del sniffer, RSSI y el resto de la línea.
+# ── Sniffer frames ─────────────────────────────────────────────────────────
+# The output carries Unicode boxes that the serial link mangles, so this
+# anchors on what's stable: host time, sniffer millis, RSSI and the rest of the line.
 LINE = re.compile(r"^(\d{2}:\d{2}:\d{2}\.\d{3})\s+(\d+)\s+(-?\d+)\s+(\S+)(.*)$")
 
 frames = []
@@ -41,11 +42,11 @@ for raw in open(sniff_path, encoding="utf-8-sig", errors="replace"):
     })
 
 if not frames:
-    print("sin tramas parseadas")
+    print("no frames parsed")
     sys.exit()
 
-# ── Ráfagas: se cortan por hueco en el millis del sniffer, que es monótono ────
-# El reloj del host se corre por el buffer del serial; el millis de la placa no.
+# ── Bursts: split on a gap in the sniffer's millis, which is monotonic ───────
+# The host clock drifts because of the serial buffer; the board's millis doesn't.
 bursts = []
 cur = [frames[0]]
 for f in frames[1:]:
@@ -56,11 +57,11 @@ for f in frames[1:]:
         cur.append(f)
 bursts.append(cur)
 
-# Sólo las que contienen tramas del nodo: el resto son deauth broadcast de
-# vecinos, que entran al filtro a propósito pero no son ciclos.
+# Only the ones that contain frames from the node: the rest are deauth
+# broadcasts from neighbors, which pass the filter on purpose but aren't cycles.
 bursts = [b for b in bursts if any(f["from_node"] for f in b)]
 
-# ── Telemetría entregada ─────────────────────────────────────────────────────
+# ── Delivered telemetry ──────────────────────────────────────────────────────
 telem = []
 for raw in open(probe_path, encoding="utf-8"):
     raw = raw.strip()
@@ -76,7 +77,7 @@ for raw in open(probe_path, encoding="utf-8"):
                       d.get("boot_count")))
 
 print("=" * 78)
-print(f"{len(bursts)} ráfagas con tramas del nodo   |   {len(telem)} telemetrías entregadas")
+print(f"{len(bursts)} bursts with node frames   |   {len(telem)} telemetry deliveries")
 print("=" * 78)
 
 rows = []
@@ -99,8 +100,8 @@ for b in bursts:
 ok = [r for r in rows if r["hit"] is not None]
 lost = [r for r in rows if r["hit"] is None]
 
-print(f"\nráfagas con telemetría : {len(ok)}")
-print(f"ráfagas SIN telemetría : {len(lost)}")
+print(f"\nbursts with telemetry    : {len(ok)}")
+print(f"bursts WITHOUT telemetry : {len(lost)}")
 
 
 def stat(rs, key):
@@ -109,9 +110,9 @@ def stat(rs, key):
 
 
 print("\n" + "─" * 78)
-print(f"{'grupo':<24} {'n':>4} {'RSSI med':>10} {'RSSI min':>10} {'% RETRY':>9} {'tramas':>8} {'dur':>8}")
+print(f"{'group':<24} {'n':>4} {'RSSI med':>10} {'RSSI min':>10} {'% RETRY':>9} {'frames':>8} {'dur':>8}")
 print("─" * 78)
-for name, rs in (("ciclos que llegaron", ok), ("ciclos PERDIDOS", lost)):
+for name, rs in (("cycles that arrived", ok), ("LOST cycles", lost)):
     if not rs:
         continue
     print(f"{name:<24} {len(rs):>4} {stat(rs,'rssi_med'):>10.1f} {stat(rs,'rssi_min'):>10.1f} "
@@ -121,31 +122,32 @@ if ok and lost:
     dr = stat(lost, "rssi_med") - stat(ok, "rssi_med")
     dq = stat(lost, "retry_pct") - stat(ok, "retry_pct")
     print("\n" + "─" * 78)
-    print("LECTURA")
+    print("READING")
     print("─" * 78)
-    print(f"Diferencia de RSSI (perdidos − llegados): {dr:+.1f} dB")
-    print(f"Diferencia de % de RETRY:                 {dq:+.0f} puntos")
+    print(f"RSSI difference (lost − arrived):  {dr:+.1f} dB")
+    print(f"RETRY % difference:                {dq:+.0f} points")
     print()
-    # El % de RETRY NO sirve para decidir esto: es casi tautológico, porque un
-    # ciclo perdido es por definición uno cuyas tramas no fueron reconocidas, y
-    # cada no-reconocimiento genera un reintento. La primera versión de este
-    # script concluía con esa diferencia y daba un veredicto equivocado. El dato
-    # no circular es el RSSI, que se mide igual pase lo que pase después.
+    # RETRY % is NOT useful for deciding this: it's nearly tautological,
+    # because a lost cycle is by definition one whose frames were not
+    # acknowledged, and every non-acknowledgment generates a retry. The
+    # first version of this script concluded from that difference and gave
+    # a wrong verdict. The non-circular data point is RSSI, which is
+    # measured the same regardless of what happens afterward.
     if dr < -2:
-        print("⇒ Los ciclos perdidos llegan al AP más débiles. La pérdida sigue el")
-        print("  nivel de señal, y el trabajo es de antena o de ubicación.")
+        print("⇒ Lost cycles arrive at the AP weaker. The loss tracks the signal")
+        print("  level, and the fix is about antenna or placement.")
     else:
-        print("⇒ El RSSI es INDISTINGUIBLE entre los que llegan y los que no.")
-        print("  El margen de subida es igual de malo en los dos grupos, así que")
-        print("  explica el RÉGIMEN —por qué se pierde ~1 de cada 4— pero no CUÁL")
-        print("  ciclo se pierde: eso lo decide que una racha de reintentos fallidos")
-        print("  agote el límite. Mejorar el margen igual debería bajar la tasa, y")
-        print("  de forma más que proporcional, porque cada dB reduce la")
-        print("  probabilidad de fallo por trama y las rachas son potencias de eso.")
-        print(f"  (El {stat(ok,'retry_pct'):.0f}% de RETRY de los ciclos SANOS es el número")
-        print("  que mide el margen sin circularidad: un enlace sano está en 1-5%.)")
+        print("⇒ RSSI is INDISTINGUISHABLE between the ones that arrive and the ones that don't.")
+        print("  The uplink margin is equally bad in both groups, so it explains")
+        print("  the REGIME —why ~1 in 4 gets lost— but not WHICH cycle gets")
+        print("  lost: that's decided by a streak of failed retries exhausting")
+        print("  the limit. Improving the margin should still lower the rate, and")
+        print("  more than proportionally, because each dB reduces the")
+        print("  per-frame failure probability and streaks are powers of that.")
+        print(f"  (The {stat(ok,'retry_pct'):.0f}% RETRY rate of HEALTHY cycles is the number")
+        print("  that measures the margin without circularity: a healthy link is at 1-5%.)")
 
-# Distribución completa, por si la mediana esconde una cola.
-print("\nRSSI del nodo por ráfaga (mediana), en orden temporal:")
-print("  llegados:  " + " ".join(f"{r['rssi_med']:.0f}" for r in ok if r["rssi_med"]))
-print("  perdidos:  " + " ".join(f"{r['rssi_med']:.0f}" for r in lost if r["rssi_med"]))
+# Full distribution, in case the median hides a tail.
+print("\nNode RSSI per burst (median), in chronological order:")
+print("  arrived: " + " ".join(f"{r['rssi_med']:.0f}" for r in ok if r["rssi_med"]))
+print("  lost:    " + " ".join(f"{r['rssi_med']:.0f}" for r in lost if r["rssi_med"]))

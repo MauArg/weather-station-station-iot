@@ -1,27 +1,28 @@
-// brokerprobe — mide, desde un tercer consumidor, si los payloads que el nodo
-// da por publicados llegan al broker.
+// brokerprobe — measures, from a third consumer, whether the payloads the
+// node considers published actually reach the broker.
 //
-// La pregunta que contesta: de los ciclos que el nodo registra como
-// LOG_PUBLISH_OK y que no aparecen en ningún suscriptor, ¿el PUBLISH entró al
-// broker y se perdió adentro, o nunca llegó?
+// The question it answers: of the cycles the node logs as LOG_PUBLISH_OK
+// that don't show up on any subscriber, did the PUBLISH make it into the
+// broker and get lost inside, or did it never arrive?
 //
-// Un tercer suscriptor no alcanza para eso: si el broker descarta el mensaje en
-// el ingreso, TODOS los suscriptores lo pierden igual. Lo que sí discrimina son
-// los contadores $SYS, que Mosquitto incrementa en handle__publish, antes de
-// rutear:
+// A third subscriber isn't enough for that: if the broker drops the message
+// on ingress, ALL subscribers lose it the same way. What does discriminate
+// are the $SYS counters, which Mosquitto increments in handle__publish,
+// before routing:
 //
-//   $SYS/broker/publish/messages/received  → PUBLISH ingresados
-//   $SYS/broker/publish/bytes/received     → bytes, para confirmar que el
-//                                            ingresado era la telemetría (~480 B)
-//                                            y no un mensaje corto
+//   $SYS/broker/publish/messages/received  → PUBLISH messages ingested
+//   $SYS/broker/publish/bytes/received     → bytes, to confirm the
+//                                            ingested message was telemetry
+//                                            (~480 B) and not a short one
 //
-// Y de paso, $SYS/broker/clients/connected da la vida de la sesión del nodo
-// dentro del broker, que es la premisa de la hipótesis del takeover: si la
-// sesión queda viva entre ciclos (~90 s con keepalive 60), cada reconexión
-// fuerza un takeover por client-ID duplicado.
+// And along the way, $SYS/broker/clients/connected gives the lifetime of
+// the node's session inside the broker, which is the premise behind the
+// takeover hypothesis: if the session stays alive between cycles (~90 s
+// with keepalive 60), every reconnection forces a takeover via duplicate
+// client ID.
 //
-// Mosquitto publica cada valor de $SYS sólo cuando cambia, así que la secuencia
-// de mensajes ES la secuencia de transiciones, con su timestamp.
+// Mosquitto publishes each $SYS value only when it changes, so the message
+// sequence IS the sequence of transitions, with its timestamp.
 package main
 
 import (
@@ -45,16 +46,17 @@ type event struct {
 	T     string `json:"t"`
 	Topic string `json:"topic"`
 	Value string `json:"value,omitempty"`
-	// sólo para telemetría
+	// telemetry only
 	BootCount *int64 `json:"boot_count,omitempty"`
 	RSSI      *int64 `json:"rssi,omitempty"`
 	Firmware  string `json:"firmware,omitempty"`
 	Bytes     int    `json:"bytes,omitempty"`
-	// El payload entero. La primera versión sólo extraía los cuatro campos de
-	// arriba, y cuando hizo falta cruzar las pérdidas contra `system_v` —la
-	// hipótesis de que la alimentación se cae en los picos de transmisión— el
-	// dato había pasado por acá y no se había guardado. Guardar todo cuesta
-	// nada y evita tener que repetir una ventana de 35 minutos.
+	// The full payload. The first version only extracted the four fields
+	// above, and when it became necessary to cross-check losses against
+	// `system_v` —the hypothesis that power sags during transmission
+	// spikes— the data had already passed through here and hadn't been
+	// saved. Saving everything costs nothing and avoids having to repeat a
+	// 35-minute window.
 	Doc map[string]any `json:"doc,omitempty"`
 }
 
@@ -65,16 +67,16 @@ type probe struct {
 
 	start time.Time
 
-	// telemetría entregada
+	// telemetry delivered
 	telemetry  int
 	bootCounts []int64
 	firmware   string
 
-	// contadores $SYS (primer valor visto y último)
+	// $SYS counters (first value seen and last)
 	sysFirst map[string]uint64
 	sysLast  map[string]uint64
 
-	// transiciones de clients/connected
+	// clients/connected transitions
 	connSamples []connSample
 }
 
@@ -84,17 +86,17 @@ type connSample struct {
 }
 
 func main() {
-	broker := flag.String("broker", "tcp://192.168.18.250:1883", "URL del broker")
-	user := flag.String("user", "weather_station_iot", "usuario MQTT")
-	pass := flag.String("pass", "aXdC7nE2gLEe", "password MQTT")
-	topic := flag.String("topic", "station/01/telemetry", "topic de telemetría")
-	dur := flag.Duration("dur", 30*time.Minute, "duración de la ventana")
-	out := flag.String("out", "brokerprobe.ndjson", "archivo de eventos")
+	broker := flag.String("broker", "tcp://192.168.18.250:1883", "broker URL")
+	user := flag.String("user", "weather_station_iot", "MQTT user")
+	pass := flag.String("pass", "aXdC7nE2gLEe", "MQTT password")
+	topic := flag.String("topic", "station/01/telemetry", "telemetry topic")
+	dur := flag.Duration("dur", 30*time.Minute, "window duration")
+	out := flag.String("out", "brokerprobe.ndjson", "events file")
 	flag.Parse()
 
 	f, err := os.Create(*out)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "no se pudo crear el archivo:", err)
+		fmt.Fprintln(os.Stderr, "could not create file:", err)
 		os.Exit(1)
 	}
 	defer f.Close()
@@ -108,42 +110,42 @@ func main() {
 	p.enc = json.NewEncoder(p.w)
 	defer p.w.Flush()
 
-	// Client ID propio: el del nodo y el del backend ya están en uso, y un
-	// duplicado forzaría exactamente el takeover que vinimos a observar.
+	// Its own client ID: the node's and the backend's are already in use,
+	// and a duplicate would force exactly the takeover we came here to observe.
 	opts := mqtt.NewClientOptions().
 		AddBroker(*broker).
 		SetClientID(fmt.Sprintf("ws-brokerprobe-%d", os.Getpid())).
 		SetUsername(*user).
 		SetPassword(*pass).
 		SetCleanSession(true).
-		// Keepalive alto a propósito: cada PINGREQ propio ensucia
-		// $SYS/broker/messages/received, que es uno de los contadores que se
-		// están leyendo. No afecta a publish/messages/received, pero de paso
-		// deja el total limpio.
+		// High keepalive on purpose: every own PINGREQ dirties
+		// $SYS/broker/messages/received, which is one of the counters being
+		// read. It doesn't affect publish/messages/received, but it keeps
+		// that total clean too.
 		SetKeepAlive(300 * time.Second).
 		SetAutoReconnect(true).
 		SetConnectTimeout(10 * time.Second)
 
 	opts.OnConnect = func(c mqtt.Client) {
-		fmt.Printf("[%s] conectado al broker\n", ts(time.Now()))
+		fmt.Printf("[%s] connected to broker\n", ts(time.Now()))
 		for _, t := range []string{*topic, "station/01/status", "$SYS/broker/#"} {
 			if tok := c.Subscribe(t, 0, p.handle); tok.Wait() && tok.Error() != nil {
-				fmt.Fprintf(os.Stderr, "suscripción a %s falló: %v\n", t, tok.Error())
+				fmt.Fprintf(os.Stderr, "subscription to %s failed: %v\n", t, tok.Error())
 			}
 		}
-		fmt.Printf("[%s] suscripto a telemetría, status y $SYS/broker/#\n", ts(time.Now()))
+		fmt.Printf("[%s] subscribed to telemetry, status and $SYS/broker/#\n", ts(time.Now()))
 	}
 	opts.OnConnectionLost = func(_ mqtt.Client, err error) {
-		fmt.Printf("[%s] conexión perdida: %v\n", ts(time.Now()), err)
+		fmt.Printf("[%s] connection lost: %v\n", ts(time.Now()), err)
 	}
 
 	c := mqtt.NewClient(opts)
 	if tok := c.Connect(); tok.Wait() && tok.Error() != nil {
-		fmt.Fprintln(os.Stderr, "no se pudo conectar:", tok.Error())
+		fmt.Fprintln(os.Stderr, "could not connect:", tok.Error())
 		os.Exit(1)
 	}
 
-	fmt.Printf("ventana de %s — el nodo publica cada ~63 s, así que son ~%d ciclos\n",
+	fmt.Printf("%s window — the node publishes every ~63 s, so that's ~%d cycles\n",
 		*dur, int(dur.Seconds()/63))
 
 	sig := make(chan os.Signal, 1)
@@ -151,7 +153,7 @@ func main() {
 	select {
 	case <-time.After(*dur):
 	case <-sig:
-		fmt.Println("\ninterrumpido — cerrando y resumiendo lo medido")
+		fmt.Println("\ninterrupted — shutting down and summarizing what was measured")
 	}
 
 	c.Disconnect(500)
@@ -192,7 +194,7 @@ func (p *probe) handle(_ mqtt.Client, m mqtt.Message) {
 		if ev.BootCount != nil {
 			bc = *ev.BootCount
 		}
-		fmt.Printf("[%s] TELEMETRÍA  boot=%d  %d B  rssi=%s  fw=%s\n",
+		fmt.Printf("[%s] TELEMETRY  boot=%d  %d B  rssi=%s  fw=%s\n",
 			ts(now), bc, ev.Bytes, rssiStr(ev.RSSI), ev.Firmware)
 
 	case strings.HasPrefix(m.Topic(), "$SYS/"):
@@ -224,7 +226,7 @@ func (p *probe) handle(_ mqtt.Client, m mqtt.Message) {
 	_ = p.enc.Encode(ev)
 }
 
-// Los contadores que se imprimen en vivo. El resto va al NDJSON igual.
+// The counters printed live. The rest still goes to the NDJSON.
 func watched(key string) bool {
 	switch key {
 	case "publish/messages/received", "publish/bytes/received",
@@ -244,36 +246,35 @@ func (p *probe) report(outPath string) {
 	bytesIngested := p.delta("publish/bytes/received")
 
 	fmt.Println("\n" + strings.Repeat("═", 78))
-	fmt.Printf("RESUMEN — ventana de %s   (firmware visto: %s)\n", elapsed.Round(time.Second), orDash(p.firmware))
+	fmt.Printf("SUMMARY — %s window   (firmware seen: %s)\n", elapsed.Round(time.Second), orDash(p.firmware))
 	fmt.Println(strings.Repeat("═", 78))
 
-	fmt.Printf("\nTelemetría ENTREGADA a este suscriptor : %d mensajes\n", p.telemetry)
-	fmt.Printf("PUBLISH INGRESADOS al broker ($SYS)    : %d", pubIngested)
+	fmt.Printf("\nTelemetry DELIVERED to this subscriber : %d messages\n", p.telemetry)
+	fmt.Printf("PUBLISH INGESTED by the broker ($SYS)  : %d", pubIngested)
 	if pubIngested > 0 {
 		fmt.Printf("   (%d B, ~%d B/msg)", bytesIngested, bytesIngested/pubIngested)
 	}
 	fmt.Println()
 
-	// El veredicto. Ojo con el borde de la ventana: el contador $SYS puede
-	// llegar hasta 10 s tarde respecto del último payload, así que ±1 no
-	// significa nada.
+	// The verdict. Watch the window's edge: the $SYS counter can arrive up
+	// to 10 s late relative to the last payload, so ±1 means nothing.
 	diff := int64(pubIngested) - int64(p.telemetry)
 	fmt.Println()
 	switch {
 	case diff > 1:
-		fmt.Printf("⇒ %d PUBLISH entraron al broker y NO se entregaron.\n", diff)
-		fmt.Println("  La pérdida es DEL LADO DEL BROKER (ingreso o ruteo), no del aire.")
-		fmt.Println("  Compatible con el takeover por client-ID duplicado.")
+		fmt.Printf("⇒ %d PUBLISH messages entered the broker and were NOT delivered.\n", diff)
+		fmt.Println("  The loss is ON THE BROKER SIDE (ingress or routing), not over the air.")
+		fmt.Println("  Consistent with the duplicate client-ID takeover.")
 	case diff < -1:
-		fmt.Printf("⇒ llegaron %d mensajes MÁS que PUBLISH contados — revisar la ventana\n", -diff)
-		fmt.Println("  (¿otro publisher activo, o contador reiniciado por restart del broker?)")
+		fmt.Printf("⇒ %d MORE messages arrived than PUBLISH counted — check the window\n", -diff)
+		fmt.Println("  (another active publisher, or a counter reset by a broker restart?)")
 	default:
-		fmt.Println("⇒ ingresados ≈ entregados: todo lo que entró al broker se entregó.")
-		fmt.Println("  La pérdida ocurre ANTES del broker — el PUBLISH nunca llegó.")
-		fmt.Println("  Eso descarta el drop interno y deja al camino nodo→broker (TCP/aire).")
+		fmt.Println("⇒ ingested ≈ delivered: everything that entered the broker was delivered.")
+		fmt.Println("  The loss happens BEFORE the broker — the PUBLISH never arrived.")
+		fmt.Println("  That rules out an internal drop and leaves the node→broker path (TCP/air).")
 	}
 
-	// Ciclos que el nodo vivió, según boot_count: es el denominador real.
+	// Cycles the node actually lived, per boot_count: this is the real denominator.
 	if len(p.bootCounts) >= 2 {
 		bc := append([]int64(nil), p.bootCounts...)
 		sort.Slice(bc, func(i, j int) bool { return bc[i] < bc[j] })
@@ -284,17 +285,17 @@ func (p *probe) report(outPath string) {
 				gaps = append(gaps, strconv.FormatInt(m, 10))
 			}
 		}
-		fmt.Printf("\nboot_count %d..%d → %d ciclos vividos, %d entregados = %.0f%% perdidos\n",
+		fmt.Printf("\nboot_count %d..%d → %d cycles lived, %d delivered = %.0f%% lost\n",
 			bc[0], bc[len(bc)-1], span, len(bc), 100*float64(span-int64(len(bc)))/float64(span))
 		if len(gaps) > 0 {
-			fmt.Printf("Huecos: %s\n", strings.Join(gaps, ", "))
+			fmt.Printf("Gaps: %s\n", strings.Join(gaps, ", "))
 		}
 	}
 
-	// Vida de la sesión del nodo dentro del broker.
-	fmt.Println("\n── clients/connected (premisa del takeover) ──")
+	// Lifetime of the node's session inside the broker.
+	fmt.Println("\n── clients/connected (takeover premise) ──")
 	if len(p.connSamples) == 0 {
-		fmt.Println("sin muestras")
+		fmt.Println("no samples")
 	} else {
 		lo, hi := p.connSamples[0].n, p.connSamples[0].n
 		for _, s := range p.connSamples {
@@ -305,20 +306,20 @@ func (p *probe) report(outPath string) {
 				hi = s.n
 			}
 		}
-		fmt.Printf("rango %d..%d en %d transiciones\n", lo, hi, len(p.connSamples))
+		fmt.Printf("range %d..%d across %d transitions\n", lo, hi, len(p.connSamples))
 		for i, s := range p.connSamples {
 			d := ""
 			if i > 0 {
-				d = fmt.Sprintf("  (+%s desde la anterior)", s.at.Sub(p.connSamples[i-1].at).Round(time.Second))
+				d = fmt.Sprintf("  (+%s since the previous one)", s.at.Sub(p.connSamples[i-1].at).Round(time.Second))
 			}
 			fmt.Printf("  [%s] %d%s\n", ts(s.at), s.n, d)
 		}
-		fmt.Println("\nLectura: si la sesión del nodo se cierra sola, connected baja pocos")
-		fmt.Println("segundos después de cada ciclo. Si se queda arriba entre ciclos, la")
-		fmt.Println("sesión sobrevive y cada reconexión pega contra un client-ID vivo.")
+		fmt.Println("\nReading: if the node's session closes on its own, connected drops a few")
+		fmt.Println("seconds after each cycle. If it stays up between cycles, the session")
+		fmt.Println("survives and every reconnection hits a still-alive client ID.")
 	}
 
-	fmt.Printf("\nEventos crudos: %s\n", outPath)
+	fmt.Printf("\nRaw events: %s\n", outPath)
 }
 
 func (p *probe) delta(key string) uint64 {
