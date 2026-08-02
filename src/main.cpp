@@ -10,22 +10,22 @@
 #include "sensors.h"
 #include "logging.h"
 #include <esp_system.h>
-#include <esp_wifi.h>   // esp_wifi_set_protocol — ver WIFI_FORCE_11B en config.h
+#include <esp_wifi.h>   // esp_wifi_set_protocol — see WIFI_FORCE_11B in config.h
 
-// ─── Clientes globales ────────────────────────────────────────────────────────
+// ─── Global clients ───────────────────────────────────────────────────────────
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
 
-// ─── Estado RTC para ciclo normal ─────────────────────────────────────────────
+// ─── RTC state for the normal cycle ───────────────────────────────────────────
 RTC_DATA_ATTR uint32_t rtc_bootCount    = 0;
 RTC_DATA_ATTR uint8_t  rtc_wifiChannel  = 0;
 RTC_DATA_ATTR uint8_t  rtc_wifiBssid[6] = {0};
 
-// ─── Buffers para comando MQTT (llenados en callback) ─────────────────────────
+// ─── Buffers for MQTT command (filled in the callback) ────────────────────────
 static String  pendingCmdPayload = "";
 static bool    cmdReceived       = false;
 
-// ─── Prototipos ───────────────────────────────────────────────────────────────
+// ─── Prototypes ───────────────────────────────────────────────────────────────
 bool  connectWiFi();
 bool  connectMQTT();
 void  mqttCallback(char* topic, byte* payload, unsigned int length);
@@ -46,35 +46,35 @@ void setup() {
     rtc_bootCount++;
     LOG_V("=== Boot #%u ===  Firmware: %s", rtc_bootCount, FIRMWARE_VERSION);
 
-    // Antes del primer logging_write(): el estado del logging vive en
-    // `.rtc_noinit`, que en un power-on arranca con basura.
+    // Before the first logging_write(): the logging state lives in
+    // `.rtc_noinit`, which starts out garbage on power-on.
     logging_begin();
 
-    // El motivo del reset distingue un wake normal de un panic, un watchdog o
-    // una brownout. Es gratis y hoy no hay forma de saberlo en campo — la
-    // brownout es una hipótesis viva dada la situación solar/batería.
+    // The reset reason distinguishes a normal wake from a panic, a watchdog
+    // or a brownout. It's free and today there's no way to know it in the
+    // field — brownout is a live hypothesis given the solar/battery situation.
     //
-    // Además marca dónde se reinició rtc_bootCount: ese contador vive en
-    // `.rtc.data` y se borra en cualquier reset que no sea wake de deep sleep,
-    // mientras que el ring ahora sobrevive. O sea que una entry con reset != 8
-    // es la frontera entre dos vidas del contador, y el backend la necesita para
-    // no fechar mal lo que quedó del otro lado.
+    // It also marks where rtc_bootCount got reset: that counter lives in
+    // `.rtc.data` and gets wiped on any reset that isn't a deep sleep wake,
+    // while the ring now survives. So an entry with reset != 8 is the
+    // boundary between two lifetimes of the counter, and the backend needs
+    // it to avoid misdating whatever is left on the other side.
     logging_write(LOG_BOOT, 0, (int16_t)esp_reset_reason());
 
     Wire.begin(I2C_SDA, I2C_SCL);
 
-    // ── Si estábamos en service mode antes del reinicio, retomar inmediatamente
+    // ── If we were in service mode before the restart, resume immediately
     if (serviceMode_isActive()) {
-        LOG_V("RTC indica service mode activo — retomando sin leer MQTT");
+        LOG_V("RTC indicates active service mode — resuming without reading MQTT");
         if (!connectWiFi()) { goToDeepSleep(); return; }
-        // El retorno de connectMQTT() se ignora a propósito: este camino es el de
-        // después de un reflash, y serviceMode_run() levanta ArduinoOTA aunque no
-        // haya broker. Abortar acá si MQTT falla cerraría la ventana de OTA justo
-        // cuando más la necesitás — si el firmware nuevo salió mal, la única forma
-        // de corregirlo a distancia es que esa ventana se abra igual. Sin MQTT no
-        // hay heartbeats, pero el flasheo funciona.
+        // connectMQTT()'s return value is deliberately ignored: this path is
+        // the one after a reflash, and serviceMode_run() brings up ArduinoOTA
+        // even without a broker. Aborting here if MQTT fails would close the
+        // OTA window exactly when it's needed most — if the new firmware came
+        // out broken, the only way to fix it remotely is for that window to
+        // open anyway. No MQTT means no heartbeats, but flashing still works.
         connectMQTT();
-        // Crear un Command dummy para que evaluate() entre al run() directamente
+        // Create a dummy Command so evaluate() goes straight into run()
         Command resumeCmd;
         resumeCmd.type        = CommandType::MAINTENANCE;
         resumeCmd.timeout_min = rtc_serviceTimeoutMin;
@@ -83,76 +83,80 @@ void setup() {
         return;
     }
 
-    // ── Ciclo normal ──────────────────────────────────────────────────────────
-    // Lo antes posible dentro de este camino: el DHT22 pide ~2 s de estabilización
-    // tras recibir energía, y mientras el rail-on vivía dentro de sensors_init()
-    // —que corre después de WiFi, MQTT y la espera del retenido— esos 2 s se
-    // pagaban enteros al final del ciclo, con la radio asociada. Eran el 61% de
-    // los 3,3 s de ventana despierta medidos en campo el 2026-07-28. Acá el warmup
-    // transcurre en paralelo con trabajo que había que hacer igual.
+    // ── Normal cycle ──────────────────────────────────────────────────────────
+    // As early as possible on this path: the DHT22 needs ~2 s to stabilize
+    // after getting power, and while the rail-on lived inside sensors_init()
+    // —which runs after WiFi, MQTT and the retained-command wait— those 2 s
+    // were paid in full at the end of the cycle, with the radio associated.
+    // That was 61% of the 3.3 s awake window measured in the field on
+    // 2026-07-28. Here the warmup happens in parallel with work that had to
+    // be done anyway.
     //
-    // Va DESPUÉS del early-return de service mode a propósito: ese camino no toca
-    // los rails hoy, y una sesión puede durar hasta 60 min. Encenderlos ahí dejaría
-    // al sensor de lluvia con tensión continua sobre los electrodos durante toda la
-    // sesión, que es justo la corrosión electrolítica que la lectura pulsada evita.
+    // Goes AFTER the service mode early-return on purpose: that path doesn't
+    // touch the rails today, and a session can last up to 60 min. Turning
+    // them on there would leave the rain sensor with continuous voltage on
+    // the electrodes for the whole session, which is exactly the
+    // electrolytic corrosion the pulsed reading avoids.
     sensors_railsOn();
 
     if (!connectWiFi()) { goToDeepSleep(); return; }
     if (!connectMQTT()) { goToDeepSleep(); return; }
 
-    // Leer comando retenido del broker (esperar hasta MQTT_RETAINED_WAIT_MS)
+    // Read the broker's retained command (wait up to MQTT_RETAINED_WAIT_MS)
     Command cmd = waitForRetainedCommand();
 
-    // Inicializar sensores solo en ciclo normal (no en service mode ni reboot)
+    // Initialize sensors only on a normal cycle (not in service mode or reboot)
     sensors_init();
 
-    // ── Despachar según comando ────────────────────────────────────────────────
+    // ── Dispatch by command ───────────────────────────────────────────────────
     handleCommand(cmd);
 }
 
 void loop() {
-    // No se usa: el dispositivo sale por deep sleep o reinicio
+    // Not used: the device exits via deep sleep or restart
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Conexión WiFi
+// WiFi connection
 // ═════════════════════════════════════════════════════════════════════════════
 bool connectWiFi() {
     const uint32_t wifiStartMs = millis();
     WiFi.mode(WIFI_STA);
 
-    // Antes de WiFi.begin(): el modo de power save se aplica a la asociación que
-    // viene, y con el default (modem sleep) la asociación se muere a mitad del
-    // ciclo. Ver WIFI_POWER_SAVE en config.h para la medición que llevó acá.
+    // Before WiFi.begin(): the power save mode applies to the association
+    // that follows, and with the default (modem sleep) the association dies
+    // mid-cycle. See WIFI_POWER_SAVE in config.h for the measurement that
+    // led here.
     WiFi.setSleep(WIFI_POWER_SAVE ? true : false);
 
 #if WIFI_FORCE_11B
-    // Va después de WiFi.mode(), que es lo que inicializa y arranca el driver:
-    // esp_wifi_set_protocol() falla con ESP_ERR_WIFI_NOT_STARTED si se llama
-    // antes. Ver WIFI_FORCE_11B en config.h — sale de que el sniffer decodifica
-    // las tramas de gestión del nodo (1 Mbps) y ni una sola de sus tramas de
-    // datos (OFDM), a la misma distancia y en el mismo instante.
+    // Goes after WiFi.mode(), which is what initializes and starts the
+    // driver: esp_wifi_set_protocol() fails with ESP_ERR_WIFI_NOT_STARTED if
+    // called before that. See WIFI_FORCE_11B in config.h — it comes from the
+    // sniffer decoding the node's management frames (1 Mbps) and not a
+    // single one of its data frames (OFDM), at the same distance and the
+    // same moment.
     esp_err_t rate_err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);
     if (rate_err != ESP_OK) {
-        LOG_E("No se pudo forzar 802.11b: %d", (int)rate_err);
+        LOG_E("Could not force 802.11b: %d", (int)rate_err);
     }
 #endif
 
-    // IP estática
+    // Static IP
     if (!WiFi.config(WIFI_STATIC_IP, WIFI_GATEWAY, WIFI_SUBNET, WIFI_DNS)) {
-        LOG_E("Fallo al configurar IP estática");
+        LOG_E("Failed to configure static IP");
     }
 
     for (int attempt = 1; attempt <= WIFI_MAX_RETRIES; attempt++) {
         logging_write(LOG_WIFI_TRY, (uint8_t)attempt,
                       (attempt == 1) ? (int16_t)rtc_wifiChannel : 0);
 
-        // Primer intento usa caché si está disponible; los siguientes escanean
+        // First attempt uses the cache if available; the rest scan
         if (attempt == 1 && rtc_wifiChannel > 0) {
-            LOG_V("WiFi: intento %d/%d (canal cacheado %d)", attempt, WIFI_MAX_RETRIES, rtc_wifiChannel);
+            LOG_V("WiFi: attempt %d/%d (cached channel %d)", attempt, WIFI_MAX_RETRIES, rtc_wifiChannel);
             WiFi.begin(WIFI_SSID, WIFI_PASSWORD, rtc_wifiChannel, rtc_wifiBssid, true);
         } else {
-            LOG_V("WiFi: intento %d/%d (scan)", attempt, WIFI_MAX_RETRIES);
+            LOG_V("WiFi: attempt %d/%d (scan)", attempt, WIFI_MAX_RETRIES);
             rtc_wifiChannel = 0;
             WiFi.disconnect(false);
             delay(100);
@@ -168,80 +172,85 @@ bool connectWiFi() {
         if (WiFi.status() == WL_CONNECTED) {
             rtc_wifiChannel = WiFi.channel();
             memcpy(rtc_wifiBssid, WiFi.BSSID(), 6);
-            LOG_V("WiFi OK — IP: %s  canal: %d  intento: %d", WiFi.localIP().toString().c_str(), rtc_wifiChannel, attempt);
+            LOG_V("WiFi OK — IP: %s  channel: %d  attempt: %d", WiFi.localIP().toString().c_str(), rtc_wifiChannel, attempt);
             logging_write(LOG_WIFI_OK, (uint8_t)attempt, (int16_t)WiFi.RSSI());
             return true;
         }
 
-        LOG_E("WiFi timeout (intento %d/%d)", attempt, WIFI_MAX_RETRIES);
+        LOG_E("WiFi timeout (attempt %d/%d)", attempt, WIFI_MAX_RETRIES);
         logging_write(LOG_WIFI_FAIL, (uint8_t)attempt, (int16_t)WiFi.status());
     }
 
-    // Este es el camino caro: WIFI_MAX_RETRIES × WIFI_TIMEOUT_MS pueden ser 45 s
-    // despierto a 50-140 mA sin publicar nada. Registrar cuánto costó es la mitad
-    // de la pregunta que el ~17% de ciclos perdidos no puede responder hoy.
+    // This is the expensive path: WIFI_MAX_RETRIES × WIFI_TIMEOUT_MS can be
+    // 45 s awake at 50-140 mA without publishing anything. Recording how
+    // much it cost is half of the question the ~17% of lost cycles can't
+    // answer today.
     logging_write(LOG_WIFI_GIVEUP, 0, (int16_t)((millis() - wifiStartMs) / 100));
     return false;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Conexión MQTT
+// MQTT connection
 // ═════════════════════════════════════════════════════════════════════════════
 bool connectMQTT() {
     mqtt.setServer(MQTT_BROKER, MQTT_PORT);
     mqtt.setCallback(mqttCallback);
-    // 512 quedaba corto: el payload de telemetría llega a ~546 B con temperaturas
-    // bajo cero (más dígitos) y los 3 campos del DHT22. PubSubClient descarta el
-    // publish entero y en silencio si no entra (buffer = header 5 + 2 + topic 20
-    // + payload). 768 deja margen para el subsistema de viento pendiente.
+    // 512 was too small: the telemetry payload reaches ~546 B with
+    // below-zero temperatures (more digits) and the DHT22's 3 fields.
+    // PubSubClient silently drops the entire publish if it doesn't fit
+    // (buffer = header 5 + 2 + topic 20 + payload). 768 leaves margin for
+    // the pending wind subsystem.
     mqtt.setBufferSize(MQTT_BUFFER_BYTES);
 
-    // Keepalive corto a propósito en el ciclo normal — no por el PING del cliente
-    // (el nodo vive 2,2 s y nunca llega a mandarlo) sino por el otro efecto del
-    // keepalive: el broker da por muerta una sesión a los 1,5 × keepalive. A 30 s
-    // eso son 45 s, por debajo del ciclo de ~63 s, así que cada wake encuentra el
-    // client-ID libre. Con los 60 s que había antes la expiración caía a los 90 s
-    // y la sesión anterior seguía viva en cada reconexión, forzando un takeover por
-    // duplicado en todos los ciclos. Ver MQTT_KEEPALIVE_NORMAL_SEC en config.h y
-    // la sección de pérdida de telemetría en ../STATUS.md.
+    // Short keepalive on purpose in the normal cycle — not because of the
+    // client's PING (the node lives 2.2 s and never gets to send it) but
+    // because of the keepalive's other effect: the broker declares a
+    // session dead at 1.5 × keepalive. At 30 s that's 45 s, below the ~63 s
+    // cycle, so every wake finds the client ID free. With the 60 s it used
+    // to be, the expiration fell to 90 s and the previous session stayed
+    // alive on every reconnection, forcing a duplicate takeover on every
+    // cycle. See MQTT_KEEPALIVE_NORMAL_SEC in config.h and the telemetry
+    // loss section in ../STATUS.md.
     //
-    // Service mode necesita lo contrario y lo renegocia por su cuenta, reconectando
-    // (serviceMode_run) — el valor que gobierna al broker es el que viaja en el
-    // CONNECT, así que no alcanza con cambiarlo sobre una conexión ya abierta.
+    // Service mode needs the opposite and renegotiates it on its own, by
+    // reconnecting (serviceMode_run) — the value that governs the broker is
+    // the one that travels in the CONNECT, so changing it on an
+    // already-open connection isn't enough.
     mqtt.setKeepAlive(MQTT_KEEPALIVE_NORMAL_SEC);
 
-    // Socket timeout. Bajado de 5 s a 2 s el 2026-07-30 por energía: es el tiempo
-    // que se paga entero, despierto, en cada ciclo que no logra conectar.
+    // Socket timeout. Lowered from 5 s to 2 s on 2026-07-30 for energy: it's
+    // the time paid in full, awake, on every cycle that fails to connect.
     //
-    // El número sale de la medición, no del gusto. Sobre 30 ciclos exitosos
-    // consecutivos el tiempo despierto fue de **2291-2293 ms**, con el publish
-    // saliendo siempre a los ~2292: varianza cero. O sea que cuando el handshake
-    // MQTT funciona tarda ~46 ms, y un timeout de 5 s es 100× lo que hace falta.
-    // Con 2 s no se corta ni una conexión de las que hoy prosperan, y se ahorran
-    // ~3 s en el ~27% de ciclos que fallan (≈12 mAh/día sobre un presupuesto
-    // activo de ~47).
+    // The number comes from measurement, not taste. Over 30 consecutive
+    // successful cycles the awake time was **2291-2293 ms**, with the
+    // publish always landing around 2292: zero variance. In other words,
+    // when the MQTT handshake works it takes ~46 ms, and a 5 s timeout is
+    // 100× what's needed. At 2 s not a single connection that succeeds
+    // today gets cut off, and it saves ~3 s on the ~27% of cycles that fail
+    // (≈12 mAh/day out of an active budget of ~47).
     //
-    // El riesgo, anotado para poder detectarlo: en la primera captura de campo
-    // (1.3.0, otra configuración de router y peor señal) se vieron handshakes
-    // EXITOSOS de 2400-3200 ms. Ese régimen no aparece en los datos actuales,
-    // pero si volviera, este timeout cortaría conexiones que habrían funcionado.
-    // Se detecta con una captura de logs a nivel 1: aparecerían `LOG_MQTT_FAIL`
-    // con state -4, que hoy son casi inexistentes. Si pasa, subir a 4 s — cuesta
-    // sólo ~4 mAh/día respecto de 2 s.
+    // The risk, noted so it can be detected: in the first field capture
+    // (1.3.0, a different router config and worse signal) SUCCESSFUL
+    // handshakes of 2400-3200 ms were seen. That regime doesn't show up in
+    // the current data, but if it came back, this timeout would cut off
+    // connections that would have worked. Detectable with a level-1 log
+    // capture: `LOG_MQTT_FAIL` with state -4 would show up, which are
+    // nearly nonexistent today. If it happens, raise it to 4 s — that only
+    // costs ~4 mAh/day relative to 2 s.
     //
-    // No se puede poner 1,5 s: PubSubClient toma segundos enteros.
+    // Can't set 1.5 s: PubSubClient only takes whole seconds.
     mqtt.setSocketTimeout(2);
 
     const uint32_t mqttStartMs = millis();
     if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
-        LOG_V("MQTT conectado");
+        LOG_V("MQTT connected");
         logging_write(LOG_MQTT_OK, 0, (int16_t)(millis() - mqttStartMs));
         mqtt.subscribe(TOPIC_CMD);
         return true;
     }
     LOG_E("MQTT error: %d", mqtt.state());
-    // La otra mitad de la pregunta: con WiFi arriba y esto abajo, el ciclo se
-    // pierde igual pero la causa es completamente distinta.
+    // The other half of the question: with WiFi up and this down, the cycle
+    // is lost either way but the cause is completely different.
     logging_write(LOG_MQTT_FAIL, 0, (int16_t)mqtt.state());
     return false;
 }
@@ -253,12 +262,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             pendingCmdPayload += (char)payload[i];
         }
         cmdReceived = true;
-        LOG_V("CMD recibido: %s", pendingCmdPayload.c_str());
+        LOG_V("CMD received: %s", pendingCmdPayload.c_str());
     }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Esperar mensaje retenido del broker
+// Wait for the broker's retained message
 // ═════════════════════════════════════════════════════════════════════════════
 Command waitForRetainedCommand() {
     cmdReceived = false;
@@ -270,7 +279,7 @@ Command waitForRetainedCommand() {
     }
 
     if (!cmdReceived) {
-        LOG_V("Sin comando retenido — flujo normal");
+        LOG_V("No retained command — normal flow");
         Command none;
         none.type  = CommandType::NONE;
         none.valid = true;
@@ -281,7 +290,7 @@ Command waitForRetainedCommand() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Despacho de comandos
+// Command dispatch
 // ═════════════════════════════════════════════════════════════════════════════
 void handleCommand(const Command& cmd) {
     if (cmd.type != CommandType::NONE) {
@@ -289,7 +298,7 @@ void handleCommand(const Command& cmd) {
     }
 
     if (!cmd.valid) {
-        LOG_E("Comando inválido — continuando con flujo normal");
+        LOG_E("Invalid command — continuing with normal flow");
         publishTelemetry();
         goToDeepSleep();
         return;
@@ -298,19 +307,19 @@ void handleCommand(const Command& cmd) {
     switch (cmd.type) {
 
         case CommandType::NONE:
-            // Flujo normal: medir y dormir
+            // Normal flow: measure and sleep
             publishTelemetry();
             goToDeepSleep();
             break;
 
         case CommandType::MAINTENANCE:
-            // Delegar completamente al módulo de service mode
+            // Fully delegate to the service mode module
             serviceMode_evaluate(mqtt, cmd);
-            // serviceMode_evaluate no retorna (llama a goToDeepSleep internamente)
+            // serviceMode_evaluate does not return (calls goToDeepSleep internally)
             break;
 
         case CommandType::PING: {
-            // Responder con status y continuar ciclo normal
+            // Respond with status and continue the normal cycle
             JsonDocument doc;
             doc["firmware"]   = FIRMWARE_VERSION;
             doc["boot_count"] = rtc_bootCount;
@@ -320,7 +329,7 @@ void handleCommand(const Command& cmd) {
             mqtt.publish(TOPIC_STATUS, buf, false);
             mqtt.loop();
             delay(100);
-            mqtt.publish(TOPIC_CMD, "", true);  // limpiar retained
+            mqtt.publish(TOPIC_CMD, "", true);  // clear retained
             mqtt.loop();
             delay(100);
             publishTelemetry();
@@ -329,13 +338,13 @@ void handleCommand(const Command& cmd) {
         }
 
         case CommandType::REBOOT:
-            LOG_V("Comando reboot recibido");
-            // Limpiar el retained ANTES de reiniciar. Sin esto el nodo vuelve a
-            // leer el mismo {"cmd":"reboot"} en el siguiente wake y reinicia otra
-            // vez, en loop, hasta agotar la batería — el comando queda retenido en
-            // el broker y nada lo borra. A diferencia de PING (que limpia, más
-            // abajo) y de MAINTENANCE (que limpia al salir de service mode),
-            // REBOOT no tenía salida.
+            LOG_V("Reboot command received");
+            // Clear the retained command BEFORE restarting. Without this the
+            // node reads the same {"cmd":"reboot"} again on the next wake and
+            // restarts again, in a loop, until the battery runs out — the
+            // command stays retained on the broker and nothing clears it.
+            // Unlike PING (which clears, below) and MAINTENANCE (which
+            // clears on exiting service mode), REBOOT had no way out.
             mqtt.publish(TOPIC_CMD, "", true);
             mqtt.publish(TOPIC_STATUS, "{\"state\":\"rebooting\"}", false);
             mqtt.loop();
@@ -343,35 +352,36 @@ void handleCommand(const Command& cmd) {
             ESP.restart();
             break;
 
-        // CONFIG y CALIBRATE son stubs, pero igual tienen que limpiar el retenido:
-        // un comando que se ejecuta y no se borra se vuelve a leer en cada wake,
-        // para siempre. Es el mismo problema que tenía REBOOT, solo que acá no
-        // reinicia nada — el nodo quedaría logueando "pendiente de implementación"
-        // indefinidamente y el cmd retenido nunca se iría del broker. Alcanzable
-        // desde la consola de JSON crudo de la UI.
+        // CONFIG and CALIBRATE are stubs, but they still have to clear the
+        // retained command: a command that runs and doesn't get cleared
+        // gets read again on every wake, forever. It's the same problem
+        // REBOOT had, except here nothing restarts — the node would keep
+        // logging "not implemented yet" indefinitely and the retained cmd
+        // would never leave the broker. Reachable from the UI's raw JSON
+        // console.
         case CommandType::CONFIG:
-            // TODO: implementar cambio de config en NVS
-            LOG_V("Comando config — pendiente de implementación");
+            // TODO: implement config change in NVS
+            LOG_V("Config command — not implemented yet");
             clearRetainedCommand();
             publishTelemetry();
             goToDeepSleep();
             break;
 
         case CommandType::CALIBRATE:
-            // TODO: implementar rutina de calibración
-            LOG_V("Comando calibrate — pendiente de implementación");
+            // TODO: implement calibration routine
+            LOG_V("Calibrate command — not implemented yet");
             clearRetainedCommand();
             publishTelemetry();
             goToDeepSleep();
             break;
 
         case CommandType::LOG:
-            // No entra en service mode a propósito: el logging tiene que correr
-            // durante los ciclos normales de 60 s, que es justamente lo que se
-            // quiere observar. El nodo aplica la config, limpia el retenido y
-            // sigue de largo con el ciclo — el costo de capturar es un memcpy
-            // de 8 bytes, así que no cambia nada del consumo.
-            LOG_V("Comando log_on — nivel %u, entries %u", cmd.log_level, cmd.log_entries);
+            // Does not enter service mode on purpose: logging has to run
+            // during the normal 60 s cycles, which is exactly what needs to
+            // be observed. The node applies the config, clears the retained
+            // command and continues the cycle — the cost of capturing is an
+            // 8-byte memcpy, so it changes nothing about consumption.
+            LOG_V("log_on command — level %u, entries %u", cmd.log_level, cmd.log_entries);
             logging_configure(cmd.log_level, cmd.log_entries);
             clearRetainedCommand();
             publishTelemetry();
@@ -379,7 +389,7 @@ void handleCommand(const Command& cmd) {
             break;
 
         default:
-            LOG_E("Comando no manejado — flujo normal");
+            LOG_E("Unhandled command — normal flow");
             clearRetainedCommand();
             publishTelemetry();
             goToDeepSleep();
@@ -388,11 +398,11 @@ void handleCommand(const Command& cmd) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Limpiar el comando retenido
+// Clear the retained command
 // ═════════════════════════════════════════════════════════════════════════════
-// Un payload vacío con retain=true borra el mensaje retenido del broker. Todo
-// comando que se ejecuta tiene que hacer esto, si no vuelve a llegar en el
-// próximo wake y se repite indefinidamente.
+// An empty payload with retain=true erases the broker's retained message.
+// Every command that runs has to do this, otherwise it arrives again on the
+// next wake and repeats indefinitely.
 void clearRetainedCommand() {
     mqtt.publish(TOPIC_CMD, "", true);
     mqtt.loop();
@@ -400,7 +410,7 @@ void clearRetainedCommand() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Telemetría
+// Telemetry
 // ═════════════════════════════════════════════════════════════════════════════
 void publishTelemetry() {
     SensorData s = sensors_read();
@@ -439,10 +449,11 @@ void publishTelemetry() {
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
 
-    // Sólo mientras hay una captura corriendo: costo cero en operación normal,
-    // igual que el resto de los campos condicionales de arriba. Como capturar no
-    // cuesta energía, no hay auto-expiración por tiempo — la higiene correcta es
-    // que se vea, no un timer que apague la captura justo cuando servía.
+    // Only while a capture is running: zero cost in normal operation, same
+    // as the rest of the conditional fields above. Since capturing costs no
+    // energy, there's no time-based auto-expiry — the correct hygiene is
+    // that it's visible, not a timer that shuts off the capture right when
+    // it was useful.
     if (logging_isActive()) {
         doc["log_active"] = logging_level();
         doc["log_count"]  = logging_count();
@@ -452,19 +463,19 @@ void publishTelemetry() {
     size_t len = serializeJson(doc, buf);
 
     if (!mqtt.publish(TOPIC_TELEMETRY, buf, false)) {
-        // publish() devuelve false por dos motivos muy distintos: el payload no
-        // entra en el buffer, o la escritura al socket falló. Distinguirlos acá,
-        // que es donde se conoce el presupuesto, evita que el log culpe al buffer
-        // de una conexión caída — que fue exactamente lo que pasó en la primera
-        // captura de campo (2026-07-28): 505 B contra 741 disponibles, reportados
-        // como "¿buffer corto?".
+        // publish() returns false for two very different reasons: the
+        // payload doesn't fit in the buffer, or the socket write failed.
+        // Telling them apart here, where the budget is known, keeps the log
+        // from blaming the buffer for a dropped connection — which is
+        // exactly what happened in the first field capture (2026-07-28):
+        // 505 B against 741 available, reported as "short buffer?".
         const bool toobig = (int)len > MQTT_TELEMETRY_BUDGET;
-        LOG_E("Publish de telemetría falló (%u B de %d útiles) — %s",
+        LOG_E("Telemetry publish failed (%u B of %d usable) — %s",
               (unsigned)len, MQTT_TELEMETRY_BUDGET,
-              toobig ? "no entra en el buffer" : "conexión caída");
+              toobig ? "doesn't fit in the buffer" : "connection dropped");
         logging_write(LOG_PUBLISH_FAIL, toobig ? 1 : 2, (int16_t)len);
     } else {
-        LOG_V("Telemetría publicada (%u B)", (unsigned)len);
+        LOG_V("Telemetry published (%u B)", (unsigned)len);
         logging_write(LOG_PUBLISH_OK, 0, (int16_t)len);
     }
     mqtt.loop();
@@ -474,22 +485,23 @@ void publishTelemetry() {
 // Deep sleep
 // ═════════════════════════════════════════════════════════════════════════════
 void goToDeepSleep() {
-    LOG_V("Entrando en deep sleep (%d seg)", SLEEP_INTERVAL_SEC);
-    // Cierra el ciclo en el log: el tiempo despierto es la métrica que conecta
-    // los fallos de conexión con el consumo (10 s de un ciclo sano contra los
-    // 45 s de uno que agota los reintentos de WiFi).
+    LOG_V("Entering deep sleep (%d sec)", SLEEP_INTERVAL_SEC);
+    // Closes the cycle in the log: awake time is the metric that connects
+    // connection failures with consumption (10 s for a healthy cycle
+    // against the 45 s of one that exhausts its WiFi retries).
     logging_write(LOG_SLEEP, 0, (int16_t)(millis() / 100));
     mqtt.disconnect();
     delay(200);
     WiFi.disconnect(true);
     delay(100);
 
-    // Al final del teardown a propósito, y no entre el publish y el disconnect:
-    // así el camino de red queda idéntico al de 1.3.1 y la medición del 42% de
-    // payloads perdidos sigue siendo comparable contra ese baseline. De paso saca
-    // el I2C del camino crítico — powerSave() hace read-modify-write sobre dos
-    // chips y TwoWire tiene 50 ms de timeout por transacción, así que un bus
-    // trabado (hay historial en este proyecto) metería hasta 200 ms justo ahí.
+    // At the end of teardown on purpose, not between the publish and the
+    // disconnect: this way the network path stays identical to 1.3.1's and
+    // the 42%-lost-payloads measurement remains comparable against that
+    // baseline. It also happens to take I2C out of the critical path —
+    // powerSave() does a read-modify-write on two chips and TwoWire has a
+    // 50 ms timeout per transaction, so a stuck bus (this project has a
+    // history of that) could add up to 200 ms right there.
     sensors_sleepMonitors();
 
     esp_deep_sleep((uint64_t)SLEEP_INTERVAL_SEC * 1000000ULL);
