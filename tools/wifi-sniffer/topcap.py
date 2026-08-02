@@ -1,40 +1,41 @@
-"""Convierte la salida `#P` del sniffer en un archivo .pcap para Wireshark.
+"""Converts the sniffer's `#P` output into a .pcap file for Wireshark.
 
-    python topcap.py captura.log salida.pcap
+    python topcap.py capture.log output.pcap
 
-Cada línea del sniffer en modo pcap es:
+Each line from the sniffer in pcap mode is:
 
-    #P <microsegundos> <rssi_dbm> <largo_original> <trama_en_base64>
+    #P <microseconds> <rssi_dbm> <original_length> <frame_in_base64>
 
-El `largo_original` puede ser mayor que la trama decodificada si se truncó en
-PCAP_SNAPLEN; el formato pcap lo distingue (incl_len vs orig_len) y Wireshark lo
-marca como "packet size limited during capture".
+`original_length` can be larger than the decoded frame if it was truncated
+at PCAP_SNAPLEN; the pcap format distinguishes this (incl_len vs orig_len)
+and Wireshark flags it as "packet size limited during capture".
 
-Se escribe con DLT_IEEE802_11 (105), o sea 802.11 crudo sin radiotap. El RSSI no
-entra en el pcap por eso — pero está en la salida de texto del sniffer, y acá lo
-único que interesa es el contenido de los paquetes.
+Written with DLT_IEEE802_11 (105), i.e. raw 802.11 with no radiotap. That's
+why RSSI doesn't make it into the pcap — but it's in the sniffer's text
+output, and here the only thing that matters is the packet contents.
 
-─── OJO: las tramas traen FCS ────────────────────────────────────────────────
+─── NOTE: frames carry an FCS ────────────────────────────────────────────────
 
-El `sig_len` que entrega el modo promiscuo del ESP32 **incluye los 4 bytes de
-FCS** al final de cada trama (verificado: un ACK sale de 14 B = 10 de cabecera +
-4). Si Wireshark no lo sabe, interpreta esos 4 bytes como parte del cuerpo y
-marca las tramas como malformadas.
+The `sig_len` the ESP32's promiscuous mode delivers **includes the 4 FCS
+bytes** at the end of every frame (verified: an ACK comes out to 14 B = 10
+header + 4). If Wireshark doesn't know that, it interprets those 4 bytes as
+part of the body and flags the frames as malformed.
 
-    Preferencias → Protocols → IEEE 802.11 → ✓ "Assume packets have FCS"
+    Preferences → Protocols → IEEE 802.11 → ✓ "Assume packets have FCS"
 
-─── Para desencriptar en Wireshark ───────────────────────────────────────────
+─── To decrypt in Wireshark ───────────────────────────────────────────────────
 
-    Editar → Preferencias → Protocols → IEEE 802.11
+    Edit → Preferences → Protocols → IEEE 802.11
       ✓ Enable decryption
-      Decryption keys → nueva clave de tipo `wpa-pwd`, con el valor:
+      Decryption keys → new key of type `wpa-pwd`, with the value:
 
-          <password_de_la_red>:Ire y Mau IoT
+          <network_password>:Ire y Mau IoT
 
-El PSK no aparece en ningún archivo de este repo: se escribe directo en
-Wireshark. Y funciona porque el nodo rehace el handshake de 4 vías en cada
-ciclo, que es lo que Wireshark necesita para derivar la PTK de esa sesión: sin
-ese handshake capturado no hay forma de descifrar el tráfico de esa asociación.
+The PSK doesn't appear in any file in this repo: it's typed directly into
+Wireshark. And it works because the node redoes the 4-way handshake on
+every cycle, which is what Wireshark needs to derive that session's PTK:
+without that handshake captured there's no way to decrypt that
+association's traffic.
 """
 import base64
 import struct
@@ -65,12 +66,12 @@ for line in open(src, encoding="utf-8-sig", errors="replace"):
     pkts.append((us, rssi, orig, raw))
 
 if not pkts:
-    print(f"no se encontró ninguna línea #P en {src}")
+    print(f"no #P lines found in {src}")
     sys.exit(1)
 
-# El sniffer sólo tiene micros() desde su arranque, no hora de pared. Se ancla el
-# primer paquete en t=0 y se conservan los deltas, que es lo que importa para
-# leer una secuencia. Wireshark muestra tiempos relativos igual.
+# The sniffer only has micros() since its own boot, not wall-clock time. The
+# first packet is anchored at t=0 and the deltas are kept, which is what
+# matters for reading a sequence. Wireshark shows relative times either way.
 base_us = pkts[0][0]
 
 with open(dst, "wb") as f:
@@ -82,11 +83,11 @@ with open(dst, "wb") as f:
 
 trunc = sum(1 for _, _, orig, raw in pkts if orig > len(raw))
 span = (pkts[-1][0] - pkts[0][0]) / 1e6
-print(f"{len(pkts)} tramas -> {dst}")
-print(f"  ventana: {span:.1f} s")
-print(f"  truncadas: {trunc}" + ("  (no se van a poder desencriptar)" if trunc else ""))
+print(f"{len(pkts)} frames -> {dst}")
+print(f"  window: {span:.1f} s")
+print(f"  truncated: {trunc}" + ("  (won't be decryptable)" if trunc else ""))
 if bad:
-    print(f"  líneas descartadas por estar cortadas: {bad}")
+    print(f"  lines dropped for being cut off: {bad}")
 print()
-print("En Wireshark: Preferencias → Protocols → IEEE 802.11 → Enable decryption,")
-print("y agregar una clave `wpa-pwd` con  <password>:Ire y Mau IoT")
+print("In Wireshark: Preferences → Protocols → IEEE 802.11 → Enable decryption,")
+print("and add a `wpa-pwd` key with  <password>:Ire y Mau IoT")

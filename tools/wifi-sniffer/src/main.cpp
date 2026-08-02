@@ -1,38 +1,39 @@
-// wifi-sniffer — captura 802.11 en modo promiscuo para diagnosticar por qué se
-// muere el enlace del nodo a mitad de ciclo.
+// wifi-sniffer — captures 802.11 in promiscuous mode to diagnose why the
+// node's link dies mid-cycle.
 //
-// El problema, medido desde tres lados independientes (contadores $SYS del
-// broker, sondeo ICMP y los campos pv_* del propio firmware): el nodo se asocia
-// bien, funciona un rato variable y después deja de estar en la red en los DOS
-// sentidos, mientras su driver sigue reportando WL_CONNECTED con un RSSI normal.
-// Nadie le avisa nada. Ver ../../../STATUS.md.
+// The problem, measured from three independent angles (the broker's $SYS
+// counters, ICMP probing, and the firmware's own pv_* fields): the node
+// associates fine, works for a variable stretch, and then stops being on
+// the network in BOTH directions, while its driver keeps reporting
+// WL_CONNECTED with a normal RSSI. Nobody tells it anything. See ../../../STATUS.md.
 //
-// Lo que falta saber está en el aire, y no hace falta descifrar nada: las tramas
-// que contestan la pregunta viajan en claro. El bit de Retry vive en la cabecera
-// MAC, y los deauth/disassoc son management frames sin cifrar que además traen su
-// reason code. Tres ramas mutuamente excluyentes:
+// What's missing is in the air, and nothing needs to be decrypted: the
+// frames that answer the question travel in the clear. The Retry bit lives
+// in the MAC header, and deauth/disassoc are unencrypted management frames
+// that also carry their reason code. Three mutually exclusive branches:
 //
-//   el nodo sigue transmitiendo, con Retry=1 y sin ACK del AP
-//        -> el AP lo dio de baja en silencio y no le contesta más
-//   el nodo deja de transmitir
-//        -> se le colgó el driver, y el problema es del lado del nodo
-//   aparece un deauth/disassoc
-//        -> nos dice quién lo mandó y por qué (reason code)
+//   the node keeps transmitting, with Retry=1 and no ACK from the AP
+//        -> the AP silently dropped it and stopped answering
+//   the node stops transmitting
+//        -> its driver hung, and the problem is on the node's side
+//   a deauth/disassoc shows up
+//        -> it tells us who sent it and why (reason code)
 //
-// Limitaciones que conviene tener presentes al leer la salida:
-//   - Escucha UN canal por vez. No es un problema acá porque el canal es fijo.
-//   - Es un receptor más: sólo ve lo que le llega a SU antena. Conviene ponerlo
-//     cerca del AP, que es el punto de vista que importa.
-//   - Los ACK son tramas muy cortas que salen inmediatamente después del dato;
-//     el promiscuo del ESP32 no siempre los entrega. Una ausencia de ACK en la
-//     captura NO prueba que el AP no haya contestado — pero si se ven ACKs para
-//     unos frames y no para otros, ESO sí es señal.
+// Limitations worth keeping in mind while reading the output:
+//   - It listens to ONE channel at a time. Not a problem here since the
+//     channel is fixed.
+//   - It's just another receiver: it only sees what reaches ITS antenna.
+//     Best placed near the AP, which is the viewpoint that matters.
+//   - ACKs are very short frames that go out immediately after the data;
+//     the ESP32's promiscuous mode doesn't always deliver them. A missing
+//     ACK in the capture does NOT prove the AP failed to answer — but if
+//     ACKs show up for some frames and not others, THAT is a signal.
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_wifi.h"
 
-// ─── Qué escuchar ─────────────────────────────────────────────────────────────
-// MAC del nodo (Espressif) y BSSID de la SSID de IoT sobre la que se asocia.
+// ─── What to listen for ───────────────────────────────────────────────────────
+// The node's MAC (Espressif) and the BSSID of the IoT SSID it associates on.
 static const uint8_t NODE_MAC[6] = {0x80, 0xF1, 0xB2, 0x6D, 0xF9, 0xFC};
 static const uint8_t AP_BSSID[6] = {0xBE, 0xF1, 0x7E, 0xE9, 0xF7, 0x2F};
 
@@ -40,8 +41,8 @@ static const uint8_t AP_BSSID[6] = {0xBE, 0xF1, 0x7E, 0xE9, 0xF7, 0x2F};
   #define SNIFF_CHANNEL 1
 #endif
 
-// LED RGB de la placa. En la ESP32-S3-DevKitC-1 **v1.0** es GPIO48; en la v1.1
-// lo movieron a GPIO38. Si el LED no responde, ese es el primer sospechoso.
+// Board's RGB LED. On the ESP32-S3-DevKitC-1 **v1.0** it's GPIO48; on v1.1
+// it moved to GPIO38. If the LED doesn't respond, that's the first suspect.
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
@@ -52,31 +53,34 @@ static const uint8_t AP_BSSID[6] = {0xBE, 0xF1, 0x7E, 0xE9, 0xF7, 0x2F};
   #define SNIFF_LED 1
 #endif
 
-// Modo pcap: en vez de la salida legible, emite cada trama ENTERA en base64 para
-// rearmarla del lado de la PC y abrirla con Wireshark. Es lo que permite pasar de
-// "veo las cabeceras" a "veo los paquetes", porque Wireshark desencripta el
-// cuerpo con el PSK — y este caso es ideal para eso: el nodo rehace el handshake
-// de 4 vias en CADA ciclo, que es justo lo que Wireshark necesita para derivar la
-// PTK. Sin eso habria que capturar el momento exacto en que un cliente se asocia.
+// Pcap mode: instead of readable output, emits every ENTIRE frame in base64
+// to reassemble on the PC side and open with Wireshark. This is what makes
+// it possible to go from "I see the headers" to "I see the packets",
+// because Wireshark decrypts the body with the PSK — and this case is ideal
+// for that: the node redoes the 4-way handshake on EVERY cycle, which is
+// exactly what Wireshark needs to derive the PTK. Without that, the exact
+// moment a client associates would have to be captured.
 //
-// El "baud rate" no limita nada acá: por el USB nativo la salida va a velocidad
-// USB, no a 115200. Por eso se puede volcar la trama completa sin pensarlo.
+// The "baud rate" doesn't limit anything here: over the native USB the
+// output runs at USB speed, not 115200. That's why the whole frame can be
+// dumped without a second thought.
 #ifndef SNIFF_PCAP
   #define SNIFF_PCAP 0
 #endif
-// Recorte por trama. Un publish de telemetria son ~503 B de MQTT mas las
-// cabeceras 802.11/LLC/IP/TCP, asi que 600 entra entero. Lo que se pase queda
-// truncado y Wireshark lo marca — no rompe nada, pero no se podria desencriptar
-// esa trama porque el MIC de CCMP se calcula sobre el cuerpo completo.
+// Per-frame cap. A telemetry publish is ~503 B of MQTT plus the
+// 802.11/LLC/IP/TCP headers, so 600 fits the whole thing. Anything past
+// that gets truncated and Wireshark flags it — nothing breaks, but that
+// frame couldn't be decrypted because CCMP's MIC is computed over the whole body.
 #define PCAP_SNAPLEN 600
 
-// Silencio que cierra una ráfaga. El nodo vive ~2,3 s y duerme ~60 s, así que
-// 5 s separan un ciclo del siguiente sin ninguna ambigüedad.
+// Silence that closes a burst. The node lives ~2.3 s and sleeps ~60 s, so
+// 5 s unambiguously separates one cycle from the next.
 static const uint32_t BURST_GAP_MS = 5000;
 
-// ─── Cabecera 802.11 ──────────────────────────────────────────────────────────
-// Ojo: un ACK mide 10 bytes y sólo trae addr1. Leer addr2 en ese caso sería leer
-// fuera de la trama, por eso todo acceso va guardado por la longitud real.
+// ─── 802.11 header ────────────────────────────────────────────────────────────
+// Note: an ACK is 10 bytes and only carries addr1. Reading addr2 in that
+// case would read past the frame, which is why every access is guarded by
+// the real length.
 typedef struct {
     uint16_t frame_ctrl;
     uint16_t duration;
@@ -94,11 +98,11 @@ struct rec_t {
     bool     retry;
     bool     prot;
     uint8_t  a1[6], a2[6], a3[6];
-    uint8_t  n_addr;      // cuántas direcciones son válidas en esta trama
-    uint16_t reason;      // sólo deauth/disassoc
+    uint8_t  n_addr;      // how many addresses are valid in this frame
+    uint16_t reason;      // deauth/disassoc only
     uint16_t len;
 #if SNIFF_PCAP
-    uint32_t us;          // marca de tiempo fina, para el pcap
+    uint32_t us;          // fine-grained timestamp, for the pcap
     uint16_t caplen;
     uint8_t  raw[PCAP_SNAPLEN];
 #endif
@@ -106,7 +110,7 @@ struct rec_t {
 
 static QueueHandle_t q;
 
-// ─── Estadística por ráfaga (un ciclo del nodo) ───────────────────────────────
+// ─── Per-burst statistics (one node cycle) ───────────────────────────────────
 static uint32_t burst_first_ms = 0, burst_last_ms = 0;
 static uint32_t n_from_node = 0, n_to_node = 0, n_retry = 0, n_ack_to_node = 0;
 static uint32_t n_deauth = 0, n_assoc = 0, n_auth = 0, n_null = 0;
@@ -117,23 +121,23 @@ static inline bool mac_eq(const uint8_t* a, const uint8_t* b) {
     return memcmp(a, b, 6) == 0;
 }
 
-// ─── LED RGB ──────────────────────────────────────────────────────────────────
-// El color codifica el tipo de trama, así que se puede diagnosticar de reojo sin
-// leer el serial: una ráfaga sana es violeta (asociación) y después verde y cian
-// alternando. Ámbar de más quiere decir que el enlace está peleando, y rojo es la
-// trama que estamos cazando.
+// ─── RGB LED ──────────────────────────────────────────────────────────────────
+// Color encodes the frame type, so it can be diagnosed at a glance without
+// reading the serial: a healthy burst is violet (association) and then
+// green and cyan alternating. Too much amber means the link is struggling,
+// and red is the frame we're hunting for.
 //
-// El brillo va deliberadamente bajo: un WS2812 al máximo encandila y hace
-// indistinguibles los colores. El destello se pinta al llegar la trama y se apaga
-// con un decaimiento exponencial — sin eso, tramas separadas por microsegundos
-// serían un borrón continuo.
+// Brightness is deliberately kept low: a WS2812 at full brightness is
+// blinding and makes the colors indistinguishable. The flash is painted
+// when the frame arrives and fades with an exponential decay — without
+// that, frames microseconds apart would be one continuous blur.
 #if SNIFF_LED
 static uint8_t  led_r = 0, led_g = 0, led_b = 0;
 static uint32_t led_latch_until = 0;
 
 static void led_flash(uint8_t r, uint8_t g, uint8_t b, uint32_t hold_ms = 0) {
-    // Un latch (el deauth) no se deja pisar por el tráfico que venga después:
-    // es justamente la trama que no queremos que pase desapercibida.
+    // A latch (the deauth) isn't allowed to be overwritten by whatever
+    // traffic comes after: it's exactly the frame we don't want to go unnoticed.
     if (hold_ms == 0 && millis() < led_latch_until) return;
     led_r = r; led_g = g; led_b = b;
     if (hold_ms) led_latch_until = millis() + hold_ms;
@@ -153,30 +157,31 @@ static void led_tick() {
         led_b = (uint8_t)(led_b * 78 / 100);
         neopixelWrite(SNIFF_RGB_PIN, led_r, led_g, led_b);
     } else {
-        // Respiración azul muy tenue en el silencio entre ciclos: confirma que
-        // sigue vivo —son ~60 s sin nada— y hace que la ráfaga contraste.
+        // Very faint blue breathing during the silence between cycles:
+        // confirms it's still alive —that's ~60 s of nothing— and makes the
+        // burst stand out by contrast.
         const uint32_t phase = (now / 6) % 512;
         const uint8_t  v = (uint8_t)((phase < 256 ? phase : 511 - phase) / 64);
         neopixelWrite(SNIFF_RGB_PIN, 0, 0, v);
     }
 }
 
-// Paleta, elegida por lo que significa cada trama en esta investigación.
+// Palette, chosen for what each frame means in this investigation.
 static void led_for_frame(uint8_t type, uint8_t subtype, bool retry, bool from_node) {
     if (type == 0 && (subtype == 12 || subtype == 10)) {
-        led_flash(160, 0, 0, 1500);            // DEAUTH/disassoc — rojo, latcheado
+        led_flash(160, 0, 0, 1500);            // DEAUTH/disassoc — red, latched
     } else if (type == 0 && (subtype == 11 || subtype <= 3)) {
-        led_flash(55, 0, 60);                  // auth / assoc — violeta
+        led_flash(55, 0, 60);                  // auth / assoc — violet
     } else if (type == 0) {
-        led_flash(0, 0, 30);                   // otro management — azul tenue
+        led_flash(0, 0, 30);                   // other management — faint blue
     } else if (type == 1) {
-        led_flash(22, 22, 22);                 // control (ACK, RTS/CTS) — blanco
+        led_flash(22, 22, 22);                 // control (ACK, RTS/CTS) — white
     } else if (retry) {
-        led_flash(70, 28, 0);                  // reintento — ámbar
+        led_flash(70, 28, 0);                  // retry — amber
     } else if (from_node) {
-        led_flash(0, 55, 0);                   // datos del nodo — verde
+        led_flash(0, 55, 0);                   // data from the node — green
     } else {
-        led_flash(0, 32, 55);                  // datos hacia el nodo — cian
+        led_flash(0, 32, 55);                  // data toward the node — cyan
     }
 }
 #else
@@ -185,9 +190,9 @@ static inline void led_for_frame(uint8_t, uint8_t, bool, bool) {}
 #endif
 
 #if SNIFF_PCAP
-// Base64 a mano, contra un buffer estatico. La libreria del core devuelve String
-// y esto corre una vez por trama dentro de una rafaga: no queremos que el heap
-// se fragmente ni pagar allocaciones en el camino caliente.
+// Hand-rolled base64, against a static buffer. The core's library returns a
+// String and this runs once per frame inside a burst: heap fragmentation
+// and allocations on the hot path are not wanted.
 static const char B64C[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static char b64buf[(PCAP_SNAPLEN + 2) / 3 * 4 + 1];
 
@@ -240,16 +245,16 @@ static const char* ctrl_name(uint8_t s) {
 static const char* data_name(uint8_t s) {
     switch (s) {
         case 0:  return "data";
-        case 4:  return "null";       // el "estoy acá" del power save
+        case 4:  return "null";       // power save's "I'm here" frame
         case 8:  return "qos-data";
         case 12: return "qos-null";
         default: return "data?";
     }
 }
 
-// ─── Callback de promiscuo ────────────────────────────────────────────────────
-// Corre en la tarea de WiFi: acá sólo se filtra y se encola. Imprimir desde
-// adentro haría perder tramas, que es justo lo que no queremos.
+// ─── Promiscuous callback ─────────────────────────────────────────────────────
+// Runs in the WiFi task: only filtering and queueing happen here. Printing
+// from inside would drop frames, which is exactly what we don't want.
 static void sniffer_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
     const wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
     const uint16_t len = pkt->rx_ctrl.sig_len;
@@ -260,22 +265,22 @@ static void sniffer_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
     const uint8_t  ftype = (fc >> 2) & 0x3;
     const uint8_t  fsub  = (fc >> 4) & 0xF;
 
-    // Beacons y probe-resp de toda la vecindad: son la mayoría del aire y no
-    // aportan nada acá.
+    // Beacons and probe-resp from the whole neighborhood: they're most of
+    // the airtime and contribute nothing here.
     if (ftype == 0 && (fsub == 8 || fsub == 5)) return;
 
-    // Cuántas direcciones trae realmente esta trama.
+    // How many addresses this frame actually carries.
     uint8_t n_addr = 0;
     if (len >= 10) n_addr = 1;
     if (len >= 16) n_addr = 2;
     if (len >= 24) n_addr = 3;
 
-    // Nos interesa todo lo que toque al nodo o a su AP.
+    // We care about anything that touches the node or its AP.
     bool relevant = false;
     if (n_addr >= 1 && (mac_eq(h->addr1, NODE_MAC) || mac_eq(h->addr1, AP_BSSID))) relevant = true;
     if (n_addr >= 2 && (mac_eq(h->addr2, NODE_MAC) || mac_eq(h->addr2, AP_BSSID))) relevant = true;
     if (n_addr >= 3 && (mac_eq(h->addr3, NODE_MAC) || mac_eq(h->addr3, AP_BSSID))) relevant = true;
-    // Un deauth broadcast también nos importa aunque no nombre al nodo.
+    // A deauth broadcast matters too, even if it doesn't name the node.
     if (ftype == 0 && (fsub == 12 || fsub == 10)) relevant = true;
     if (!relevant) return;
 
@@ -291,15 +296,15 @@ static void sniffer_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (n_addr >= 1) memcpy(r.a1, h->addr1, 6);
     if (n_addr >= 2) memcpy(r.a2, h->addr2, 6);
     if (n_addr >= 3) memcpy(r.a3, h->addr3, 6);
-    // El reason code de un deauth/disassoc son los 2 primeros bytes del cuerpo.
+    // A deauth/disassoc's reason code is the first 2 bytes of the body.
     if (ftype == 0 && (fsub == 12 || fsub == 10) && len >= 26) {
         r.reason = pkt->payload[24] | (pkt->payload[25] << 8);
     }
 
-    // xQueueSend y no xQueueSendFromISR: esto NO es una ISR, corre en la tarea
-    // de WiFi. La variante FromISR desde contexto de tarea puede disparar un
-    // assert de FreeRTOS. Timeout 0 para no bloquear nunca al driver: si la
-    // cola se llena preferimos perder una trama antes que frenar la radio.
+    // xQueueSend, not xQueueSendFromISR: this is NOT an ISR, it runs in the
+    // WiFi task. The FromISR variant called from task context can trigger a
+    // FreeRTOS assert. Timeout 0 so the driver is never blocked: if the
+    // queue fills up, dropping a frame is preferred over stalling the radio.
 #if SNIFF_PCAP
     r.us     = (uint32_t)esp_timer_get_time();
     r.caplen = (len > PCAP_SNAPLEN) ? PCAP_SNAPLEN : len;
@@ -316,8 +321,8 @@ static void fmt_mac(char* out, const uint8_t* m) {
 static void close_burst() {
     if (!burst_open) return;
     Serial.printf(
-        "\n──── fin de ráfaga #%u ── duró %u ms ────\n"
-        "     del nodo: %u   al nodo: %u   ACK al nodo: %u   con Retry: %u\n"
+        "\n──── end of burst #%u ── lasted %u ms ────\n"
+        "     from node: %u   to node: %u   ACK to node: %u   with Retry: %u\n"
         "     auth: %u   assoc: %u   null/qos-null: %u   DEAUTH/disassoc: %u\n\n",
         burst_num, burst_last_ms - burst_first_ms,
         n_from_node, n_to_node, n_ack_to_node, n_retry,
@@ -333,8 +338,8 @@ void setup() {
     Serial.println("\n\n=== wifi-sniffer ===");
 
 #if SNIFF_PCAP
-    // 48 registros de ~600 B son ~29 KB. Alcanza de sobra: el loop los drena por
-    // USB a velocidad de megabytes y una rafaga entera son ~100 tramas.
+    // 48 records of ~600 B is ~29 KB. Plenty: the loop drains them over USB
+    // at megabyte speed and a whole burst is ~100 frames.
     q = xQueueCreate(48, sizeof(rec_t));
 #else
     q = xQueueCreate(512, sizeof(rec_t));
@@ -344,8 +349,8 @@ void setup() {
     WiFi.disconnect();
     delay(100);
 
-    // Management + data + control. Los ACK son control, y son los que dicen si
-    // el AP le está contestando al nodo.
+    // Management + data + control. ACKs are control, and they're what
+    // tells us whether the AP is answering the node.
     wifi_promiscuous_filter_t filt = {};
     filt.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
                        WIFI_PROMIS_FILTER_MASK_DATA |
@@ -363,28 +368,28 @@ void setup() {
     char n[13], a[13];
     fmt_mac(n, NODE_MAC);
     fmt_mac(a, AP_BSSID);
-    Serial.printf("canal %d   nodo %s   AP %s\n", SNIFF_CHANNEL, n, a);
-    Serial.println("beacons y probe-resp filtrados; el resto se imprime");
+    Serial.printf("channel %d   node %s   AP %s\n", SNIFF_CHANNEL, n, a);
+    Serial.println("beacons and probe-resp filtered out; the rest gets printed");
 #if SNIFF_LED
     Serial.println(
-        "\nLED (GPIO" STR(SNIFF_RGB_PIN) "):  violeta=auth/assoc  verde=datos del nodo\n"
-        "                cian=datos hacia el nodo  ámbar=RETRY  blanco=ACK/control\n"
-        "                ROJO FIJO=deauth/disassoc  azul respirando=silencio\n");
+        "\nLED (GPIO" STR(SNIFF_RGB_PIN) "):  violet=auth/assoc  green=data from node\n"
+        "                cyan=data toward node  amber=RETRY  white=ACK/control\n"
+        "                SOLID RED=deauth/disassoc  breathing blue=silence\n");
 #endif
     Serial.println();
 }
 
 void loop() {
     rec_t r;
-    // Timeout corto a propósito: con 200 ms el decaimiento del LED y la
-    // respiración salían a los saltos. Acá el loop respira cada 10 ms y la
-    // animación queda fluida sin costar nada — no hay nada más que hacer.
+    // Short timeout on purpose: at 200 ms the LED decay and breathing came
+    // out jerky. Here the loop breathes every 10 ms and the animation stays
+    // smooth for free — there's nothing else to do anyway.
     while (xQueueReceive(q, &r, pdMS_TO_TICKS(10)) == pdTRUE) {
         if (!burst_open) {
             burst_open = true;
             burst_num++;
             burst_first_ms = r.t_ms;
-            Serial.printf("──── ráfaga #%u ── t=%u ms ────\n", burst_num, r.t_ms);
+            Serial.printf("──── burst #%u ── t=%u ms ────\n", burst_num, r.t_ms);
         }
         burst_last_ms = r.t_ms;
 
@@ -409,10 +414,10 @@ void loop() {
         if (r.n_addr >= 3) fmt_mac(s3, r.a3);
 
 #if SNIFF_PCAP
-        // Una linea por trama: microsegundos, RSSI, largo ORIGINAL (para que el
-        // pcap registre el truncado si lo hubo) y la trama cruda en base64. El
-        // resto de la salida legible se calla en este modo para que el parser no
-        // tenga que distinguir nada.
+        // One line per frame: microseconds, RSSI, ORIGINAL length (so the
+        // pcap records the truncation if there was one) and the raw frame
+        // in base64. The rest of the readable output stays quiet in this
+        // mode so the parser doesn't have to distinguish anything.
         Serial.printf("#P %lu %d %u %s\n", (unsigned long)r.us, (int)r.rssi,
                       (unsigned)r.len, b64_encode(r.raw, r.caplen));
 #else
@@ -424,8 +429,8 @@ void loop() {
         if (r.type == 0 && (r.subtype == 12 || r.subtype == 10)) {
             Serial.printf("  ← reason=%u", r.reason);
         }
-        if (from_node) Serial.print("  [nodo→]");
-        if (to_node)   Serial.print("  [→nodo]");
+        if (from_node) Serial.print("  [node→]");
+        if (to_node)   Serial.print("  [→node]");
         Serial.println();
 #endif
 
@@ -438,14 +443,14 @@ void loop() {
         close_burst();
     }
 
-    // Latido. El nodo transmite 2,3 s cada 63, así que el silencio es el estado
-    // normal — y sin esto no hay manera de distinguir "vivo y esperando" de
-    // "colgado", ni de saber que la captura está enganchada si uno se perdió el
-    // banner (que sale una sola vez).
+    // Heartbeat. The node transmits for 2.3 s every 63, so silence is the
+    // normal state — and without this there's no way to tell "alive and
+    // waiting" from "hung", or to know the capture is hooked up if the
+    // banner (which only prints once) was missed.
     static uint32_t last_beat = 0;
     if (millis() - last_beat > 15000) {
         last_beat = millis();
-        Serial.printf("· vivo  t=%lu s  rafagas=%u\n",
+        Serial.printf("· alive  t=%lu s  bursts=%u\n",
                       (unsigned long)(millis() / 1000), burst_num);
     }
 }
