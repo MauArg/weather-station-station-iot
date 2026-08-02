@@ -14,7 +14,7 @@
 //   // DHT22
 //   #define DHT22_PIN 2
   
-//   // Battery monitoring (Fase 2)
+//   // Battery monitoring (Phase 2)
 //   #define BATTERY_ADC_PIN 0
 //   #define BATTERY_VOLTAGE_DIVIDER 2.0
 //   #define HAS_BATTERY_CHARGER false
