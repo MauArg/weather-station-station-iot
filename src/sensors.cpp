@@ -9,7 +9,7 @@
 #include "sensors.h"
 #include "config.h"
 
-// ─── Objetos de driver ────────────────────────────────────────────────────────
+// ─── Driver objects ───────────────────────────────────────────────────────────
 static Adafruit_SHT31  sht31;
 static Adafruit_BMP085 bmp;
 static Adafruit_INA219 ina219_solar(INA219_SOLAR_ADDR);
@@ -19,7 +19,7 @@ static OneWire           _oneWire(PIN_DS18B20);
 static DallasTemperature _ds18b20(&_oneWire);
 static DHT               _dht(PIN_DHT22, DHT22);
 
-// ─── Estado de inicialización ─────────────────────────────────────────────────
+// ─── Initialization state ─────────────────────────────────────────────────────
 static bool _sht31_ok   = false;
 static bool _bmp_ok     = false;
 static bool _solar_ok   = false;
@@ -27,18 +27,18 @@ static bool _system_ok  = false;
 static bool _ds18b20_ok = false;
 
 // ─── Rails ────────────────────────────────────────────────────────────────────
-// Momento en que los rails entregaron energía, para anclar el warmup del DHT22.
-// En .bss, así que arrancan en cero/false en cada boot — incluido el wake de deep
-// sleep, donde sólo sobrevive la RTC memory.
+// Moment the rails delivered power, to anchor the DHT22 warmup. In .bss, so
+// they start at zero/false on every boot — including a deep sleep wake,
+// where only RTC memory survives.
 static uint32_t _rail_on_ms = 0;
 static bool     _rails_on   = false;
 
 // =============================================================================
-//  Monitor de batería para service mode
+//  Battery monitor for service mode
 // =============================================================================
-// Ver sensors.h para el porqué: sensors_init() no corre en service mode, así que
-// sin esto el heartbeat no puede reportar voltaje. Solo toca el INA219 de sistema
-// (0x40), que está en el bus I2C siempre alimentado — no enciende ningún rail.
+// See sensors.h for the why: sensors_init() does not run in service mode, so
+// without this the heartbeat can't report voltage. Only touches the system
+// INA219 (0x40), which is on the always-powered I2C bus — turns on no rail.
 
 bool sensors_initSystemMonitor() {
     if (!_system_ok) {
@@ -52,64 +52,67 @@ float sensors_readSystemVoltage() {
     return ina219_system.getBusVoltage_V();
 }
 
-// Ver sensors.h para el porqué del guard: powerSave() no chequea i2c_dev, y hay
-// caminos que llegan a dormir sin haber inicializado nada.
+// See sensors.h for the why behind the guard: powerSave() does not check
+// i2c_dev, and there are paths that reach sleep without having initialized
+// anything.
 void sensors_sleepMonitors() {
     if (_solar_ok)  ina219_solar.powerSave(true);
     if (_system_ok) ina219_system.powerSave(true);
 }
 
 // =============================================================================
-//  Inicialización
+//  Initialization
 // =============================================================================
 
-// Idempotente a propósito: setup() la llama apenas arranca, para que el warmup
-// del DHT22 corra en paralelo con WiFi+MQTT en vez de en serie. Pero sensors_init()
-// la vuelve a llamar, así que sigue siendo correcta aunque alguien agregue un
-// camino que llegue al init sin pasar por setup(). El timestamp es el de la
-// primera llamada — que es el momento en que el rail realmente entregó energía.
+// Idempotent on purpose: setup() calls it right at startup, so the DHT22
+// warmup runs in parallel with WiFi+MQTT instead of in series. But
+// sensors_init() calls it again too, so it stays correct even if someone
+// adds a path that reaches init without going through setup(). The
+// timestamp is the one from the first call — the moment the rail actually
+// delivered power.
 void sensors_railsOn() {
     if (_rails_on) return;
 
-    // TODO [bajo consumo]: apagar Rail B en Tier 2 y Rail A en Tier 3
-    //   según umbral de batería — ver battery.h
+    // TODO [low power]: turn off Rail B at Tier 2 and Rail A at Tier 3
+    //   based on battery threshold — see battery.h
     pinMode(PIN_RAIL_A, OUTPUT); digitalWrite(PIN_RAIL_A, HIGH);
     pinMode(PIN_RAIL_B, OUTPUT); digitalWrite(PIN_RAIL_B, HIGH);
 
-    _rail_on_ms = millis();   // referencia del warmup del DHT22
+    _rail_on_ms = millis();   // reference point for the DHT22 warmup
     _rails_on   = true;
 }
 
 bool sensors_init() {
-    // No-op si setup() ya los encendió, que es el caso normal.
+    // No-op if setup() already turned them on, which is the normal case.
     sensors_railsOn();
 
     // ── DS18B20 ───────────────────────────────────────────────────────────────
     _ds18b20.begin();
-    _ds18b20.setResolution(9);   // ~93 ms conversión
+    _ds18b20.setResolution(9);   // ~93 ms conversion
     _ds18b20_ok = (_ds18b20.getDeviceCount() > 0);
 
     // ── DHT22 ─────────────────────────────────────────────────────────────────
     _dht.begin();
 
-    // ── Sensores de pulso (always-on) — pines configurados, datos diferidos ───
-    // TODO [pulsos]: implementar conteo acumulado en RTC memory
+    // ── Pulse sensors (always-on) — pins configured, data deferred ───────────
+    // TODO [pulses]: implement accumulated counting in RTC memory
     pinMode(PIN_ANEMOMETER, INPUT_PULLUP);
     pinMode(PIN_RAIN_GAUGE,  INPUT_PULLUP);
 
-    // ── Sensores I2C (Wire ya inicializado en setup() antes de llegar aquí) ───
+    // ── I2C sensors (Wire already initialized in setup() before reaching here) ─
     _sht31_ok  = sht31.begin(0x44);
     _bmp_ok    = bmp.begin();
     _solar_ok  = ina219_solar.begin();
     _system_ok = ina219_system.begin();
 
     // ── DHT22 warmup ──────────────────────────────────────────────────────────
-    // Se mide desde que Rail B entrega energía, NO desde el boot. Con el rail-on
-    // movido al arranque de setup() (1.5.0), para cuando se llega acá ya pasaron
-    // WiFi, MQTT y la espera del retenido, así que el grueso del warmup ya
-    // transcurrió y este delay queda en unos pocos cientos de ms en vez de 2 s
-    // enteros. Va al final del init para que el tiempo del bus I2C y del DS18B20
-    // también cuente como parte del warmup en vez de sumarse.
+    // Measured from when Rail B delivers power, NOT from boot. With the
+    // rail-on moved to the start of setup() (1.5.0), by the time execution
+    // reaches here WiFi, MQTT and the retained-command wait have already
+    // happened, so most of the warmup has already elapsed and this delay
+    // ends up a few hundred ms instead of a full 2 s. It goes at the end of
+    // init so the I2C bus and DS18B20 time also counts as part of the
+    // warmup instead of adding on top.
     uint32_t elapsed = millis() - _rail_on_ms;
     if (elapsed < DHT_WARMUP_MS) {
         delay(DHT_WARMUP_MS - elapsed);
@@ -126,13 +129,13 @@ bool sensors_init() {
 }
 
 // =============================================================================
-//  Lectura
+//  Reading
 // =============================================================================
 
-// Excita el sensor de lluvia con un pulso corto en lugar de tensión continua
-// para minimizar corrosión electrolítica en los electrodos. GPIO4 actúa como
-// salida durante la excitación y luego como ADC para la lectura.
-// Rail B debe estar activo al llamar esta función.
+// Excites the rain sensor with a short pulse instead of continuous voltage
+// to minimize electrolytic corrosion on the electrodes. GPIO4 acts as an
+// output during excitation and then as an ADC for the reading.
+// Rail B must be active when calling this function.
 static int readRainSensorPulsed() {
     const int DISCHARGE_MS  = 2;
     const int EXCITATION_MS = 10;   // τ = 4.95kΩ × 100nF = 0.495ms → ×20
@@ -160,7 +163,7 @@ static int readRainSensorPulsed() {
 SensorData sensors_read() {
     SensorData d;
 
-    // ── Flags de estado ───────────────────────────────────────────────────────
+    // ── Status flags ──────────────────────────────────────────────────────────
     d.sht31_ok   = _sht31_ok;
     d.bmp_ok     = _bmp_ok;
     d.solar_ok   = _solar_ok;
@@ -198,7 +201,7 @@ SensorData sensors_read() {
         d.solar_mW = NAN;
     }
 
-    // ── INA219 sistema ────────────────────────────────────────────────────────
+    // ── INA219 system ─────────────────────────────────────────────────────────
     if (_system_ok) {
         d.system_v  = ina219_system.getBusVoltage_V();
         d.system_mA = ina219_system.getCurrent_mA();
@@ -224,29 +227,29 @@ SensorData sensors_read() {
     }
 
     // ── DHT22 (Rail B) ────────────────────────────────────────────────────────
-    // Los campos siguen llamándose dht11_* a propósito: son las claves del JSON
-    // de telemetría y renombrarlas partiría la serie histórica del InfluxDB del
-    // NAS. El sensor físico es un DHT22 desde 2026-07-25.
+    // The fields are still called dht11_* on purpose: they're the telemetry
+    // JSON keys, and renaming them would split the NAS InfluxDB's historical
+    // series. The physical sensor has been a DHT22 since 2026-07-25.
     {
         uint32_t t0 = millis();
         float t = _dht.readTemperature();
-        float h = _dht.readHumidity();   // reusa la trama cacheada, no relee el bus
+        float h = _dht.readHumidity();   // reuses the cached frame, doesn't reread the bus
 
         if (isnan(t) || isnan(h)) {
-            // Respetar el período mínimo de muestreo antes de forzar otra trama.
+            // Honor the minimum sampling period before forcing another frame.
             uint32_t elapsed = millis() - t0;
             if (elapsed < DHT_RETRY_INTERVAL_MS) {
                 delay(DHT_RETRY_INTERVAL_MS - elapsed);
             }
-            if (_dht.read(true)) {           // una sola trama forzada...
-                t = _dht.readTemperature();  // ...y ambos valores salen de ella
+            if (_dht.read(true)) {           // a single forced frame...
+                t = _dht.readTemperature();  // ...and both values come from it
                 h = _dht.readHumidity();
             }
         }
 
         if (!isnan(t) && !isnan(h)) {
-            d.dht11_temp_c  = t;   // DHT22: -40..+80 °C, resolución 0.1 (soporta bajo cero)
-            d.dht11_hum_pct = h;   // calibrado de fábrica — sin corrección empírica
+            d.dht11_temp_c  = t;   // DHT22: -40..+80 °C, 0.1 resolution (handles below zero)
+            d.dht11_hum_pct = h;   // factory-calibrated — no empirical correction
             d.dht11_ok      = true;
         } else {
             d.dht11_temp_c  = NAN;
@@ -255,21 +258,21 @@ SensorData sensors_read() {
         }
     }
 
-    // ── Fotorresistencia ADC ──────────────────────────────────────────────────
-    // Circuito: 3V3 → R10kΩ → señal → fotorresistencia → GND
-    // R_foto = R_pullup * V / (3.3 - V)
+    // ── Photoresistor ADC ─────────────────────────────────────────────────────
+    // Circuit: 3V3 → R10kΩ → signal → photoresistor → GND
+    // R_photo = R_pullup * V / (3.3 - V)
     {
         int   raw   = analogRead(PIN_PHOTORESISTOR);
         float v     = (raw / ADC_MAX_RAW) * ADC_VREF;
         float denom = ADC_VREF - v;
         d.photo_kohm = (denom > 0.01f)
                      ? (PHOTO_PULLUP_KOHM * v / denom)
-                     : 9999.0f;   // oscuridad total o sensor desconectado
+                     : 9999.0f;   // total darkness or sensor disconnected
         d.photo_ok = true;
     }
 
     // ── Rain sensor ADC ───────────────────────────────────────────────────────
-    // Circuito PCB: 3V3 → R1‖R2(4.95kΩ) → señal → C1(100nF)‖sensor → GND
+    // PCB circuit: 3V3 → R1‖R2(4.95kΩ) → signal → C1(100nF)‖sensor → GND
     // R_rain = R_pullup * V / (3.3 - V)
     {
         int   raw   = readRainSensorPulsed();
@@ -277,7 +280,7 @@ SensorData sensors_read() {
         float denom = ADC_VREF - v;
         d.rain_kohm = (denom > 0.01f)
                     ? (RAIN_PULLUP_KOHM * v / denom)
-                    : 9999.0f;   // sensor seco / desconectado
+                    : 9999.0f;   // dry / disconnected sensor
         d.rain_ok  = true;
     }
 
