@@ -20,6 +20,20 @@ static volatile bool _cmdCleared = false;
 // though liveMode_exit() does not run a sensor read of its own.
 static float _lastBattV = NAN;
 
+// Payloads published in this session. Reported on the way out: "it ran 12 min"
+// and "it published 144 payloads" answer different questions, and the second is
+// the one that says whether the session was actually useful.
+static uint32_t _lastSeq = 0;
+
+// Seconds since the session started. Recomputed at each exit rather than reused
+// from the top of the loop: publishTelemetry() sits in between and costs ~250 ms
+// normally, or ~2.3 s when the DHT22 retries. Carrying the stale value made the
+// RTC budget accumulate less than the session really consumed — a safety ceiling
+// undercounting, which is the wrong direction to be wrong in.
+static inline uint32_t _elapsedSec(uint32_t startMs) {
+    return (millis() - startMs) / 1000;
+}
+
 static void _liveCmdCallback(char* topic, byte* payload, unsigned int length) {
     // ONLY an empty payload counts as "cleared", exactly as service mode does.
     //
@@ -63,8 +77,17 @@ static void _publishStatus(PubSubClient& mqtt, const char* state,
     // INA219 did not answer — a zero reads as a dead battery.
     if (!isnan(battV)) doc["system_v"] = battV;
 
-    char buf[192];
-    serializeJson(doc, buf);
+    // 256, not the ~160 B the worst case actually measures. serializeJson() into
+    // a fixed array truncates silently when it does not fit, and what gets
+    // published is then invalid JSON that the backend drops without a word —
+    // the same silent-truncation trap already documented for the log pages. The
+    // margin is free; being wrong here is not.
+    char buf[256];
+    const size_t len = serializeJson(doc, buf);
+    if (len >= sizeof(buf) - 1) {
+        LOG_E("Live status truncated (%u B) — not published", (unsigned)len);
+        return;
+    }
     mqtt.publish(TOPIC_STATUS, buf, false);
     mqtt.loop();
 }
@@ -96,17 +119,34 @@ void liveMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSec) 
         // _lastBattV rather than NAN: the exit is exactly the moment the pack
         // voltage is worth knowing, and it is the whole story when the reason
         // is low_battery.
-        _publishStatus(mqtt, "live_mode_ended", reason, sessionSec, 0, _lastBattV);
+        _publishStatus(mqtt, "live_mode_ended", reason, sessionSec, _lastSeq, _lastBattV);
+
         // Clearing the retained command is what actually ends the session. If
         // it stays on the broker the node reads it again on the next wake and
         // re-enters — the reboot-loop failure mode, except here each iteration
         // costs a full live session instead of a restart.
-        mqtt.publish(TOPIC_CMD, "", true);
+        const bool cleared = mqtt.publish(TOPIC_CMD, "", true);
         mqtt.loop();
         delay(200);
 
-        // Only now is re-entry impossible, so only now does the budget reset.
-        rtc_liveElapsedSec = 0;
+        if (cleared) {
+            // Only now is re-entry impossible, so only now does the budget reset.
+            //
+            // Checking the return matters: publish() fails when the socket write
+            // fails, and resetting anyway would hand a full budget to the
+            // re-entry that is about to happen — the ceiling would stop being
+            // absolute, which is the whole reason the accumulator exists.
+            //
+            // What this still cannot promise is delivery. This is QoS 0, so a
+            // true only means the bytes reached the local TCP stack; the node
+            // then closes the socket and sleeps. That is the same gap the
+            // telemetry-loss investigation ended up documenting. Erring toward
+            // "not cleared" is the safe direction: the worst case is a session
+            // that ends earlier than the operator asked for.
+            rtc_liveElapsedSec = 0;
+        } else {
+            LOG_E("Live mode: could not clear the retained command — budget kept");
+        }
     } else {
         // Could not clear it. The accumulator above keeps the ceiling absolute
         // across the re-entry that is now going to happen.
@@ -145,9 +185,10 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
     mqtt.setKeepAlive(MQTT_KEEPALIVE_SERVICE_SEC);
 
     const uint32_t startMs = millis();
-    uint32_t seq           = 0;
     uint8_t  lowBattStrikes = 0;
     uint8_t  noSunStrikes   = 0;
+    _lastSeq   = 0;
+    _lastBattV = NAN;
 
     // Entry status carries the pack voltage read on the way in: the operator's
     // first question when a session starts is whether it should have.
@@ -155,21 +196,21 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
     _publishStatus(mqtt, "live_mode_active", nullptr, 0, 0, _lastBattV);
 
     for (;;) {
-        const uint32_t elapsed = (millis() - startMs) / 1000;
-
-        if (elapsed >= remainingSec) {
-            liveMode_exit(mqtt, "timeout", elapsed);
+        if (_elapsedSec(startMs) >= remainingSec) {
+            liveMode_exit(mqtt, "timeout", _elapsedSec(startMs));
             return;
         }
 
         if (!mqtt.connected() && !_reconnectMqtt(mqtt)) {
             // Without a broker there is nothing to publish to and no way to
             // receive the stop command, so staying awake only burns the pack.
-            liveMode_exit(mqtt, "mqtt_lost", elapsed);
+            // _reconnectMqtt can spend ~35 s getting here, which is why the
+            // elapsed time is read now and not before the attempt.
+            liveMode_exit(mqtt, "mqtt_lost", _elapsedSec(startMs));
             return;
         }
 
-        SensorData s = publishTelemetry(++seq);
+        SensorData s = publishTelemetry(++_lastSeq);
         if (!isnan(s.system_v)) _lastBattV = s.system_v;
 
         // ── Exit floors ──────────────────────────────────────────────────────
@@ -184,7 +225,7 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
         // exactly that reason in parseCommand().
         if (!force && !isnan(s.solar_v) && s.solar_v < LIVE_MIN_PANEL_V) {
             if (++noSunStrikes >= LIVE_FLOOR_STRIKES) {
-                liveMode_exit(mqtt, "no_sun", elapsed);
+                liveMode_exit(mqtt, "no_sun", _elapsedSec(startMs));
                 return;
             }
         } else {
@@ -193,7 +234,7 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
 
         if (!isnan(s.system_v) && s.system_v < LIVE_MIN_BATTERY_V) {
             if (++lowBattStrikes >= LIVE_FLOOR_STRIKES) {
-                liveMode_exit(mqtt, "low_battery", elapsed);
+                liveMode_exit(mqtt, "low_battery", _elapsedSec(startMs));
                 return;
             }
         } else {
@@ -208,7 +249,7 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
         while ((int32_t)(until - millis()) > 0) {
             mqtt.loop();
             if (_cmdCleared) {
-                liveMode_exit(mqtt, "cleared_by_server", (millis() - startMs) / 1000);
+                liveMode_exit(mqtt, "cleared_by_server", _elapsedSec(startMs));
                 return;
             }
             delay(20);

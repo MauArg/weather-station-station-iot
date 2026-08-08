@@ -505,7 +505,30 @@ SensorData publishTelemetry(uint32_t liveSeq) {
         logging_write(LOG_PUBLISH_FAIL, toobig ? 1 : 2, (int16_t)len);
     } else {
         LOG_V("Telemetry published (%u B)", (unsigned)len);
-        logging_write(LOG_PUBLISH_OK, 0, (int16_t)len);
+        // Not recorded in live mode, and the asymmetry with LOG_PUBLISH_FAIL
+        // above is deliberate.
+        //
+        // LOG_PUBLISH_OK is level 2, so a capture at level 2 or 3 would take one
+        // entry per live publish: at a 5 s interval a 30 min session writes 360
+        // entries into a 768-entry ring, and an 8 h session laps it seven times
+        // and destroys whatever the operator armed the capture for. The ring is
+        // a scarce, operator-armed resource whose value is catching the rare
+        // event, and 5760 copies of "telemetry published - 514 B" is the
+        // opposite of that.
+        //
+        // Nothing is lost by dropping them: live_seq travels in the payload, so
+        // counting what actually arrived in InfluxDB answers the same question
+        // better than counting what the node attempted. Timestamps would not
+        // have survived anyway — `ms` saturates at 65 s and boot_count is frozen
+        // for the whole session, so every entry past the first minute decodes to
+        // the same instant.
+        //
+        // The failure path stays: a failed publish is exactly the rare event the
+        // ring exists for, and it is level 1, so it also shows up in the cheap
+        // captures that are safe to leave running.
+        if (liveSeq == 0) {
+            logging_write(LOG_PUBLISH_OK, 0, (int16_t)len);
+        }
     }
     mqtt.loop();
     return s;
