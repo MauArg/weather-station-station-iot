@@ -60,15 +60,19 @@ static void _liveCmdCallback(char* topic, byte* payload, unsigned int length) {
 // budget is being kept for the wind subsystem.
 static bool _forced = false;
 
+// remainingSec < 0 omits the field: on the way out there is no remaining
+// budget to report, and publishing a zero would read as "just about to expire"
+// rather than "not applicable".
 static void _publishStatus(PubSubClient& mqtt, const char* state,
                            const char* reason, uint32_t elapsedSec,
-                           uint32_t seq, float battV) {
+                           uint32_t seq, float battV, int32_t remainingSec) {
     JsonDocument doc;
     doc["state"]     = state;
     doc["firmware"]  = FIRMWARE_VERSION;
     doc["mode"]      = "live";
     doc["elapsed_s"] = elapsedSec;
     doc["seq"]       = seq;
+    if (remainingSec >= 0) doc["remaining_s"] = remainingSec;
     if (_forced) doc["forced"] = true;
     if (reason) doc["reason"] = reason;
     // Same rationale as the service-mode heartbeat: live mode is precisely when
@@ -119,7 +123,7 @@ void liveMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSec) 
         // _lastBattV rather than NAN: the exit is exactly the moment the pack
         // voltage is worth knowing, and it is the whole story when the reason
         // is low_battery.
-        _publishStatus(mqtt, "live_mode_ended", reason, sessionSec, _lastSeq, _lastBattV);
+        _publishStatus(mqtt, "live_mode_ended", reason, sessionSec, _lastSeq, _lastBattV, -1);
 
         // Clearing the retained command is what actually ends the session. If
         // it stays on the broker the node reads it again on the next wake and
@@ -193,7 +197,8 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
     // Entry status carries the pack voltage read on the way in: the operator's
     // first question when a session starts is whether it should have.
     _lastBattV = sensors_readSystemVoltage();
-    _publishStatus(mqtt, "live_mode_active", nullptr, 0, 0, _lastBattV);
+    _publishStatus(mqtt, "live_mode_active", nullptr, 0, 0, _lastBattV, (int32_t)remainingSec);
+    uint32_t lastHeartbeatMs = millis();
 
     for (;;) {
         if (_elapsedSec(startMs) >= remainingSec) {
@@ -252,6 +257,18 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
                 liveMode_exit(mqtt, "cleared_by_server", _elapsedSec(startMs));
                 return;
             }
+
+            // Heartbeat lives here rather than at the top of the loop so it
+            // keeps its own cadence regardless of interval_sec — at the 60 s
+            // maximum the outer loop only turns once a minute, and a heartbeat
+            // tied to it would be late by design.
+            if (millis() - lastHeartbeatMs >= (uint32_t)LIVE_HEARTBEAT_SEC * 1000UL) {
+                lastHeartbeatMs = millis();
+                const uint32_t el = _elapsedSec(startMs);
+                _publishStatus(mqtt, "live_mode_alive", nullptr, el, _lastSeq, _lastBattV,
+                               (int32_t)(el >= remainingSec ? 0 : remainingSec - el));
+            }
+
             delay(20);
         }
     }

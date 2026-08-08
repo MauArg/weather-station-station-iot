@@ -238,6 +238,19 @@
 #define LIVE_MQTT_RETRIES           5
 #define LIVE_MQTT_RETRY_DELAY_MS    2000
 
+// Session heartbeat, matching SERVICE_MODE_HEARTBEAT_SEC.
+//
+// The telemetry stream already proves the node is alive — one payload every
+// interval_sec, far more often than this. What it cannot carry is how much
+// budget is left: that is session metadata, not per-sample data, and the
+// payload budget is being kept for the wind subsystem.
+//
+// Without it the only status a session ever published was the one on entry,
+// with elapsed_s = 0. The backend caches the last status, so anyone opening the
+// dashboard mid-session read "active, elapsed 0 s" no matter how long it had
+// really been running.
+#define LIVE_HEARTBEAT_SEC          30
+
 // ─── Logging ──────────────────────────────────────────────────────────────────
 // LOG_LEVEL: 0=off, 1=error, 2=verbose
 #ifndef LOG_LEVEL
