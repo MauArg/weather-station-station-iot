@@ -72,6 +72,26 @@ Command parseCommand(const String& json) {
         if (entries > LOG_RING_ENTRIES) entries = LOG_RING_ENTRIES;
         cmd.log_entries = (uint16_t)entries;
 
+    } else if (strcmp(cmdStr, "live") == 0) {
+        cmd.type = CommandType::LIVE;
+
+        // Same clamping rationale as timeout_min and level above: ArduinoJson's
+        // | operator only fills in the default when the key is missing or of
+        // another type, so a hand-published negative or absurd value arrives
+        // here untouched, and both fields are reachable from the UI's raw JSON
+        // console. Here it matters more than usual — timeout_min feeds a
+        // (uint32_t)x*60 budget, which is exactly the multiplication that
+        // turned a negative into a ~136-year service-mode session.
+        int timeout = doc["timeout_min"] | LIVE_DEFAULT_TIMEOUT_MIN;
+        if (timeout < 1)                     timeout = 1;
+        if (timeout > LIVE_MAX_TIMEOUT_MIN)  timeout = LIVE_MAX_TIMEOUT_MIN;
+        cmd.timeout_min = timeout;
+
+        int interval = doc["interval_sec"] | LIVE_DEFAULT_INTERVAL_SEC;
+        if (interval < LIVE_MIN_INTERVAL_SEC) interval = LIVE_MIN_INTERVAL_SEC;
+        if (interval > LIVE_MAX_INTERVAL_SEC) interval = LIVE_MAX_INTERVAL_SEC;
+        cmd.live_interval_sec = (uint16_t)interval;
+
     } else {
         LOG_E("parseCommand: unknown command: %s", cmdStr);
         cmd.valid = false;
@@ -91,6 +111,7 @@ const char* commandTypeToString(CommandType type) {
         case CommandType::CALIBRATE:   return "calibrate";
         case CommandType::PING:        return "ping";
         case CommandType::LOG:         return "log_on";
+        case CommandType::LIVE:        return "live";
         default:                       return "unknown";
     }
 }

@@ -11,7 +11,8 @@ enum class CommandType {
     CONFIG,        // changes runtime parameters (e.g. sleep interval)
     CALIBRATE,     // forces a calibration routine
     PING,          // responds with status without altering the cycle
-    LOG            // turns the runtime logging system on/off
+    LOG,           // turns the runtime logging system on/off
+    LIVE           // stops sleeping and publishes continuously while there is surplus
 };
 
 // ─── Command payload ──────────────────────────────────────────────────────────
@@ -21,11 +22,13 @@ enum class CommandType {
 // {"cmd":"reboot"}
 // {"cmd":"ping"}
 // {"cmd":"log_on","level":2,"entries":768}   — level 0 turns it off
+// {"cmd":"live","interval_sec":5,"timeout_min":60}
 struct Command {
     CommandType type        = CommandType::NONE;
-    int         timeout_min = 0;          // for MAINTENANCE
+    int         timeout_min = 0;          // for MAINTENANCE and LIVE
     uint8_t     log_level   = 0;          // for LOG — 0=off, 1=anomalies, 2=summary, 3=verbose
     uint16_t    log_entries = 0;          // for LOG — 0 = full compiled-in capacity
+    uint16_t    live_interval_sec = 0;    // for LIVE — seconds between publishes
     String      raw;                      // raw payload for further processing
     bool        valid       = false;
 };

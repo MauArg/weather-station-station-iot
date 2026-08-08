@@ -187,6 +187,49 @@
 #define SERVICE_MODE_MQTT_RETRIES         5
 #define SERVICE_MODE_MQTT_RETRY_DELAY_MS  2000
 
+// ─── Live mode ────────────────────────────────────────────────────────────────
+// The node stops sleeping and publishes continuously. Only makes sense while
+// the panel is producing more than the station can spend, which is the state
+// the backend's `energy` package calls StateFull: the CN3791 lets the panel
+// drift toward open circuit once the pack stops accepting charge, so a panel
+// above ~12.5 V *is* the "battery full" signal. Deciding when to enter is the
+// backend's job — it owns the calibrated luminosity scale and the drift
+// history. Everything below is the node's own floor, and it holds regardless
+// of what the backend believes.
+//
+// Why floors at all: live mode draws ~70 mA continuously, which drains the
+// 1500 mAh pack in ~21 h. Entering wrongly is survivable; failing to *leave*
+// is not. Same lesson as the service-mode timeout that bounded nothing.
+#define LIVE_DEFAULT_INTERVAL_SEC   5
+// The DHT22 datasheet asks for ≥2 s between reads, and the driver caches the
+// frame within that window anyway — below this the extra publishes would carry
+// stale humidity/temperature.
+#define LIVE_MIN_INTERVAL_SEC       2
+#define LIVE_MAX_INTERVAL_SEC       60
+
+#define LIVE_DEFAULT_TIMEOUT_MIN    60
+// 8 h is longer than any single sunny stretch here, so the ceiling never cuts a
+// legitimate session short — it exists to bound a session nobody is watching.
+#define LIVE_MAX_TIMEOUT_MIN        480
+
+// Independent exit floors, checked on every publish.
+//
+// The panel floor is the primary one: it is what actually ends the session when
+// the sun goes. It matches energy.PanelDaylightV in the backend. At night this
+// pin sits near pack voltage (~3.65 V measured), so the margin is wide.
+//
+// The battery floor is the backstop for "sun detection was wrong". It matches
+// energy.LowBatteryV. Note system_v sags under load and live mode is a constant
+// load, so this reads pessimistic — which is the safe direction.
+#define LIVE_MIN_PANEL_V            6.0f
+#define LIVE_MIN_BATTERY_V          3.90f
+// Consecutive readings required before acting. A single sample can dip from a
+// passing cloud or a load transient; three at 5 s is 15 s of evidence.
+#define LIVE_FLOOR_STRIKES          3
+
+#define LIVE_MQTT_RETRIES           5
+#define LIVE_MQTT_RETRY_DELAY_MS    2000
+
 // ─── Logging ──────────────────────────────────────────────────────────────────
 // LOG_LEVEL: 0=off, 1=error, 2=verbose
 #ifndef LOG_LEVEL

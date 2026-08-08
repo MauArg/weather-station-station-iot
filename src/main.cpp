@@ -7,7 +7,9 @@
 #include "config.h"
 #include "command.h"
 #include "service_mode.h"
+#include "live_mode.h"
 #include "sensors.h"
+#include "telemetry.h"
 #include "logging.h"
 #include <esp_system.h>
 #include <esp_wifi.h>   // esp_wifi_set_protocol — see WIFI_FORCE_11B in config.h
@@ -30,7 +32,6 @@ bool  connectWiFi();
 bool  connectMQTT();
 void  mqttCallback(char* topic, byte* payload, unsigned int length);
 Command waitForRetainedCommand();
-void  publishTelemetry();
 void  handleCommand(const Command& cmd);
 void  clearRetainedCommand();
 void  goToDeepSleep();
@@ -375,6 +376,24 @@ void handleCommand(const Command& cmd) {
             goToDeepSleep();
             break;
 
+        case CommandType::LIVE:
+            // Publishes one payload through the normal path first, then hands
+            // over. That first publish is not cosmetic: it is the last one that
+            // carries a fresh boot_count, so the gap detector has an anchor on
+            // the boundary between the sleeping cycle and the live session.
+            //
+            // The retained command is deliberately NOT cleared here. It is what
+            // keeps the session alive across a restart — a watchdog or brownout
+            // during live mode drops the node into the normal cycle, where it
+            // reads this same command and re-enters through the entry checks.
+            // liveMode_exit() is the only place that clears it.
+            LOG_V("live command — interval %us, timeout %d min",
+                  cmd.live_interval_sec, cmd.timeout_min);
+            publishTelemetry();
+            liveMode_run(mqtt, cmd.timeout_min, cmd.live_interval_sec);
+            // liveMode_run does not return (exits via deep sleep)
+            break;
+
         case CommandType::LOG:
             // Does not enter service mode on purpose: logging has to run
             // during the normal 60 s cycles, which is exactly what needs to
@@ -412,7 +431,7 @@ void clearRetainedCommand() {
 // ═════════════════════════════════════════════════════════════════════════════
 // Telemetry
 // ═════════════════════════════════════════════════════════════════════════════
-void publishTelemetry() {
+SensorData publishTelemetry(uint32_t liveSeq) {
     SensorData s = sensors_read();
 
     JsonDocument doc;
@@ -459,6 +478,16 @@ void publishTelemetry() {
         doc["log_count"]  = logging_count();
     }
 
+    // Live mode only. boot_count increments in setup(), so it freezes for the
+    // whole session — and it is what the backend's gap detector counts to
+    // measure telemetry loss. Without a per-publish counter the loss instrument
+    // that this project spent the entire MQTT investigation building would go
+    // blind exactly in the mode that publishes the most.
+    if (liveSeq > 0) {
+        doc["live"]     = true;
+        doc["live_seq"] = liveSeq;
+    }
+
     char buf[MQTT_BUFFER_BYTES];
     size_t len = serializeJson(doc, buf);
 
@@ -479,6 +508,7 @@ void publishTelemetry() {
         logging_write(LOG_PUBLISH_OK, 0, (int16_t)len);
     }
     mqtt.loop();
+    return s;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

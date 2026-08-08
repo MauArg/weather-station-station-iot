@@ -156,7 +156,20 @@ static int readRainSensorPulsed() {
     digitalWrite(PIN_RAIN_SENSOR, LOW);
     delay(POST_MS);
 
-    pinMode(PIN_RAIN_SENSOR, INPUT);
+    // Stays driven LOW instead of being released to INPUT. Left floating, the
+    // external 4.95 kΩ pull-up to 3V3 sits across the electrodes for as long as
+    // Rail B is energized — which is the continuous DC bias the pulsed reading
+    // exists to avoid, just applied outside the pulse. Held at 0 V there is no
+    // voltage across the sensor and therefore no electrolysis.
+    //
+    // In the normal cycle this was a minor point: Rail B is on ~2.3 s per 60 s.
+    // Live mode is what makes it matter — the rail stays energized for hours,
+    // so the exposure would go from ~4% of the time to 100%.
+    //
+    // Cost is 3.3 V / 4.95 kΩ = 0.67 mA sunk through the pull-up while the rail
+    // is on. Against ~51 mA awake that is noise, and it buys back the electrode
+    // life that the pulsed reading was designed to protect.
+    digitalWrite(PIN_RAIN_SENSOR, LOW);
     return value;
 }
 
