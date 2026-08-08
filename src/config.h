@@ -284,29 +284,51 @@
 // reintroduce bias into the reading.
 //
 // Warmup after powering Rail B. The AM2302 datasheet asks for ≥1s of
-// "unstable status"; 2s is a conservative margin. Measured from the
-// rail-on, not from boot — see sensors_railsOn().
+// "unstable status". Measured from the rail-on, not from boot — see
+// sensors_railsOn().
 //
-// NOTE — since 1.5.0 this constant is what sets the floor on the awake
-// time. With the rail-on moved to the start of the cycle, awake time is
+// Since 1.5.0 this constant is what sets the floor on the awake time. With
+// the rail-on moved to the start of the cycle, awake time is
 //   max(network path, DHT_WARMUP_MS) + sensor reading (~240 ms)
-// and the network path measures ~1270 ms (275 WiFi + 42 MQTT + 800 retained
-// + ~150 init), meaning this is the term that dominates. The delay left
-// over is ~730 ms of pure waiting.
+// and the network path measured ~1270 ms (275 WiFi + 42 MQTT + 800 retained
+// + ~150 init) on 1.5.0, so this term dominates and every ms shaved off here
+// comes off the awake window almost 1:1. That 1270 ms figure predates forcing
+// 802.11b in 1.12.0; if association at 1 Mbps got slower the real saving is
+// smaller, but nothing breaks — the arithmetic is self-correcting.
 //
-// Counterintuitive consequence: **shortening MQTT_RETAINED_WAIT_MS no
-// longer saves anything.** Lowering it from 800 to 200 ms just grows this
-// warmup from 730 to 1330 ms and total awake time stays the same — the
-// pending item in ../STATUS.md noting "the 800 ms retained wait is 24% of
-// awake time" stopped applying once it ended up behind this barrier.
+// Counterintuitive consequence: **shortening MQTT_RETAINED_WAIT_MS does not
+// save anything** while this value stays above the network path. Whatever is
+// cut there is absorbed by this warmup and total awake time is unchanged.
 //
-// The lever that does still work is this same number: 2000 ms is 2× the
-// datasheet minimum. Lowering it to ~1200-1500 ms would cut awake time
-// almost 1:1, but it needs to be validated against real DHT22 readings
-// before touching it — a short warmup was already suspected of causing
-// erratic readings once (see ../STATUS.md, the 2026-07-25 bug where the
-// warmup never actually ran).
-#define DHT_WARMUP_MS           2000
+// 1300 ms since 1.14.0, down from the original 2000 ms (~750 ms less awake
+// time, ~15 mAh/day at the 51.2 mA measured in the field). Why exactly 1300:
+//
+//   - It is 30% above the 1000 ms datasheet minimum.
+//   - Going lower buys almost nothing. Below ~1270 ms the network path
+//     becomes the dominant term and the awake window stops shrinking.
+//   - The sensor can never get less than the network path anyway: the delay
+//     below is `max(elapsed since rail-on, DHT_WARMUP_MS)`, so lowering this
+//     constant cannot starve the DHT22 below ~1270 ms of real settling time.
+//   - Getting it wrong is cheap. A failed read costs DHT_RETRY_INTERVAL_MS
+//     (2000 ms) on that cycle, against 750 ms saved on every cycle, so this
+//     change still comes out ahead up to a ~37% failure rate. The baseline is
+//     0%. The retry also self-heals: by the time it fires the sensor has had
+//     ~3.5 s of settling.
+//
+// Baseline before the change, to detect a regression: 16597 readings over 20
+// days with zero dht11_ok failures, and DHT22 within ±0.4 °C of the DS18B20
+// (median -0.1 °C). Re-run the same InfluxDB query on dht11_ok / dht11_temp_c
+// / ds18b20_c to compare.
+//
+// Check BOTH, not just the failure rate. A frame that fails its checksum comes
+// back as NaN, so a bus-level problem shows up as dht11_ok:false. But a sensor
+// that is electrically ready and not yet thermally settled returns a valid,
+// checksummed, *wrong* number — the datasheet's "unstable status" is about the
+// sensor's internal state, not the bus. Only the delta against the DS18B20
+// catches that one. If either degrades, this constant is the first suspect: a
+// short warmup was already blamed for erratic readings once (see ../STATUS.md,
+// the 2026-07-25 bug where the warmup never actually ran).
+#define DHT_WARMUP_MS           1300
 
 // Minimum DHT22 sampling period (datasheet: ≥2s between readings).
 // Retry spacing for when the first frame comes out corrupted.
