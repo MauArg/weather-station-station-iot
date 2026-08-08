@@ -29,7 +29,13 @@ extern RTC_DATA_ATTR uint32_t rtc_liveElapsedSec;
 // Runs the live session until a floor trips, the budget runs out, the server
 // clears the retained command, or MQTT is lost beyond recovery. Never returns:
 // every exit path goes through liveMode_exit(), which deep-sleeps.
-void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec);
+//
+// force: skip the panel-voltage floor so the mode can be exercised at night or
+// on the bench. It skips that floor and nothing else — the battery floor, the
+// budget and the MQTT floor all still apply, and parseCommand() caps a forced
+// session at LIVE_FORCED_MAX_TIMEOUT_MIN because removing the sun floor also
+// removes what would normally end a session that should not be running.
+void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool force);
 
 // Ends the session: reports the reason, adds the elapsed time to the RTC
 // accumulator, tries to clear the retained command, and deep-sleeps.

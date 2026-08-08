@@ -82,9 +82,27 @@ Command parseCommand(const String& json) {
         // console. Here it matters more than usual — timeout_min feeds a
         // (uint32_t)x*60 budget, which is exactly the multiplication that
         // turned a negative into a ~136-year service-mode session.
+        // force skips the sun floor so the mode can be exercised at night or on
+        // the bench, where solar_v sits near pack voltage and would end the
+        // session in 3 strikes. It skips ONLY that floor — see live_mode.cpp.
+        cmd.live_force = doc["force"] | false;
+
         int timeout = doc["timeout_min"] | LIVE_DEFAULT_TIMEOUT_MIN;
-        if (timeout < 1)                     timeout = 1;
-        if (timeout > LIVE_MAX_TIMEOUT_MIN)  timeout = LIVE_MAX_TIMEOUT_MIN;
+        if (timeout < 1) timeout = 1;
+
+        // A forced session gets a much tighter ceiling, and the reason is
+        // arithmetic rather than caution. Normally the sun floor is what ends a
+        // session that should not be running; forcing removes it, leaving the
+        // battery floor as the only condition-based exit. Going from ~4.05 V to
+        // the 3.90 V floor under a ~70 mA load takes on the order of 6 h,
+        // because the LiPo curve is flat exactly there — so a forced session
+        // could burn a third of the pack overnight before anything tripped.
+        //
+        // 30 min bounds a forced session to ~35 mAh, ~2% of the pack, and is
+        // far more than enough to watch the mechanism work.
+        const int ceiling = cmd.live_force ? LIVE_FORCED_MAX_TIMEOUT_MIN
+                                           : LIVE_MAX_TIMEOUT_MIN;
+        if (timeout > ceiling) timeout = ceiling;
         cmd.timeout_min = timeout;
 
         int interval = doc["interval_sec"] | LIVE_DEFAULT_INTERVAL_SEC;

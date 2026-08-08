@@ -387,10 +387,10 @@ void handleCommand(const Command& cmd) {
             // during live mode drops the node into the normal cycle, where it
             // reads this same command and re-enters through the entry checks.
             // liveMode_exit() is the only place that clears it.
-            LOG_V("live command — interval %us, timeout %d min",
-                  cmd.live_interval_sec, cmd.timeout_min);
+            LOG_V("live command — interval %us, timeout %d min, force %d",
+                  cmd.live_interval_sec, cmd.timeout_min, (int)cmd.live_force);
             publishTelemetry();
-            liveMode_run(mqtt, cmd.timeout_min, cmd.live_interval_sec);
+            liveMode_run(mqtt, cmd.timeout_min, cmd.live_interval_sec, cmd.live_force);
             // liveMode_run does not return (exits via deep sleep)
             break;
 

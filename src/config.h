@@ -212,6 +212,14 @@
 // legitimate session short — it exists to bound a session nobody is watching.
 #define LIVE_MAX_TIMEOUT_MIN        480
 
+// A `force` session skips the sun floor so live mode can be exercised at night
+// or on the bench. That removes the exit that normally ends a session which
+// should not be running, leaving the battery floor as the only condition-based
+// one — and reaching it from ~4.05 V under a ~70 mA load takes hours, because
+// the LiPo discharge curve is flat right there. Hence a much tighter ceiling:
+// 30 min is ~35 mAh, about 2% of the pack, and plenty to watch it work.
+#define LIVE_FORCED_MAX_TIMEOUT_MIN 30
+
 // Independent exit floors, checked on every publish.
 //
 // The panel floor is the primary one: it is what actually ends the session when

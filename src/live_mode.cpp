@@ -39,6 +39,13 @@ static void _liveCmdCallback(char* topic, byte* payload, unsigned int length) {
     }
 }
 
+// Set for the whole session so the status messages can report it. A forced
+// session produces data that looks like a real one, and telling them apart
+// afterwards matters — it goes in status rather than in the telemetry payload
+// because it is a property of the session, not of each sample, and the payload
+// budget is being kept for the wind subsystem.
+static bool _forced = false;
+
 static void _publishStatus(PubSubClient& mqtt, const char* state,
                            const char* reason, uint32_t elapsedSec,
                            uint32_t seq, float battV) {
@@ -48,6 +55,7 @@ static void _publishStatus(PubSubClient& mqtt, const char* state,
     doc["mode"]      = "live";
     doc["elapsed_s"] = elapsedSec;
     doc["seq"]       = seq;
+    if (_forced) doc["forced"] = true;
     if (reason) doc["reason"] = reason;
     // Same rationale as the service-mode heartbeat: live mode is precisely when
     // the node is draining, so a status message without the pack voltage is
@@ -113,7 +121,8 @@ void liveMode_exit(PubSubClient& mqtt, const char* reason, uint32_t sessionSec) 
     esp_deep_sleep((uint64_t)SLEEP_INTERVAL_SEC * 1000000ULL);
 }
 
-void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec) {
+void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool force) {
+    _forced = force;
     const uint32_t budgetSec = (uint32_t)timeoutMin * 60;
 
     if (rtc_liveElapsedSec >= budgetSec) {
@@ -169,7 +178,11 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec) {
         // would make live mode flap. A NaN is not a strike — a sensor that did
         // not answer says nothing about the panel or the pack, and treating it
         // as a floor breach would end sessions on an I2C hiccup.
-        if (!isnan(s.solar_v) && s.solar_v < LIVE_MIN_PANEL_V) {
+        // The sun floor is the one `force` removes, and the only one. It is also
+        // the floor that normally ends a session that should not be running, so
+        // a forced session leans entirely on the budget — capped much lower for
+        // exactly that reason in parseCommand().
+        if (!force && !isnan(s.solar_v) && s.solar_v < LIVE_MIN_PANEL_V) {
             if (++noSunStrikes >= LIVE_FLOOR_STRIKES) {
                 liveMode_exit(mqtt, "no_sun", elapsed);
                 return;
