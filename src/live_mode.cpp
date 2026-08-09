@@ -218,7 +218,9 @@ void liveMode_run(PubSubClient& mqtt, int timeoutMin, uint16_t intervalSec, bool
             return;
         }
 
-        SensorData s = publishTelemetry(++_lastSeq);
+        // The gap the node will actually wait before the next one, so the
+        // backend does not have to guess a cadence that is a command parameter.
+        SensorData s = publishTelemetry(++_lastSeq, intervalSec);
         if (!isnan(s.system_v)) _lastBattV = s.system_v;
 
         // ── Exit floors ──────────────────────────────────────────────────────

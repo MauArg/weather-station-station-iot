@@ -442,7 +442,7 @@ void clearRetainedCommand() {
 // ═════════════════════════════════════════════════════════════════════════════
 // Telemetry
 // ═════════════════════════════════════════════════════════════════════════════
-SensorData publishTelemetry(uint32_t liveSeq) {
+SensorData publishTelemetry(uint32_t liveSeq, uint16_t nextSec) {
     SensorData s = sensors_read();
 
     JsonDocument doc;
@@ -478,6 +478,10 @@ SensorData publishTelemetry(uint32_t liveSeq) {
     doc["rssi_dbm"]   = (int)WiFi.RSSI();
     doc["firmware"]   = FIRMWARE_VERSION;
     doc["boot_count"] = rtc_bootCount;
+
+    // Seconds until the next intended publish. See telemetry.h for why the node
+    // reports this instead of the backend assuming it.
+    doc["next_s"]     = nextSec;
 
     // Only while a capture is running: zero cost in normal operation, same
     // as the rest of the conditional fields above. Since capturing costs no
