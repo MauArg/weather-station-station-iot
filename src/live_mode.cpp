@@ -72,7 +72,10 @@ static void _publishStatus(PubSubClient& mqtt, const char* state,
     doc["mode"]      = "live";
     doc["elapsed_s"] = elapsedSec;
     doc["seq"]       = seq;
-    if (remainingSec >= 0) doc["remaining_s"] = remainingSec;
+    // remaining_sec, not remaining_s: service mode already publishes that name
+    // and the backend only parses that one. The short spelling was dropped
+    // silently, which defeated the whole point of adding this heartbeat.
+    if (remainingSec >= 0) doc["remaining_sec"] = remainingSec;
     if (_forced) doc["forced"] = true;
     if (reason) doc["reason"] = reason;
     // Same rationale as the service-mode heartbeat: live mode is precisely when
