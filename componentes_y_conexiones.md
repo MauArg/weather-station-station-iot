@@ -16,7 +16,11 @@
 
 &#x20;
 
-\*\*Firmware en campo: `1.13.1`.\*\* Historial reciente: `1.1.0` (DHT22) → `1.2.0` (service mode + fix del loop de reboot) → `1.3.0`/`1.3.1` (sistema de logs) → `1.4.0` (INA219 en power-down) → `1.5.0` (warmup del DHT22 en paralelo con la red) → `1.6.0`-`1.13.1` (investigación de pérdida de telemetría: keepalive, timeouts, y sobre todo `WIFI_FORCE_11B`, que llevó la pérdida de 39% a 0,3%). Ver `../STATUS.md` para el detalle de cada uno.
+\*\*Firmware en campo: `1.15.0`\*\* (el `1.16.0` está commiteado, sin flashear). Historial reciente: `1.1.0` (DHT22) → `1.2.0` (service mode + fix del loop de reboot) → `1.3.0`/`1.3.1` (sistema de logs) → `1.4.0` (INA219 en power-down) → `1.5.0` (warmup del DHT22 en paralelo con la red) → `1.6.0`-`1.13.1` (investigación de pérdida de telemetría: keepalive, timeouts, y sobre todo `WIFI_FORCE_11B`, que llevó la pérdida de 39% a 0,3%) → `1.13.2` (limpieza a inglés) → `1.14.0` (warmup del DHT22 2000→1300 ms) → `1.15.0` (live mode) → `1.16.0` (heartbeat de live). Ver `../STATUS.md` para el detalle de cada uno.
+
+&#x20;
+
+\*\*Consumo medido (2026-08-08/09):\*\* ciclo normal \~47 mAh/día de ventana activa — es un \*\*piso\*\*, porque `system_mA` se muestrea con WiFi asociado pero ocioso y no captura la ráfaga de asociación. \*\*Live mode: \~53 mAh por hora\*\*, o sea que una hora de live cuesta como 1,1 días de operación normal. El consumo en deep sleep sigue \*\*sin medir\*\*.
 
 &#x20;
 
@@ -598,6 +602,14 @@ Hembra en placa auxiliar (fila 1, cols 7–18).
 \- \*\*I2C sobre UTP requiere pull-ups externos\*\* — 4.92kΩ validados en prueba de campo de 46 horas.
 
 \- \*\*CN3791 MPPT configurado para Vmp real del panel\*\* — verificar R1/R2 del divisor VMP físicamente. Mismatch con panel de 24 celdas (Vmp≈11.5V) inutiliza el MPPT.
+
+\- \*\*El CN3791 cicla carga/corte cuando el pack está lleno, y eso es normal\*\* (medido 2026-08-07, día despejado, 9 h: 14 rachas de carga y 15 de corte). Al cortar el panel sube a \~14,2 V (circuito abierto) con \~6,5 mA; al arrancar baja a \~11,5 V (Vmp bajo carga) con \~200 mA. Es terminación por CV más auto-recarga con histéresis. Las rachas largas (hasta 3,7 h) son la carga real de la mañana; el cicleo corto aparece recién con el pack lleno. \*\*No confundirlo con una falla\*\* — y ojo que hace oscilar el SoC y el estado energético que muestra el dashboard, ver `../STATUS.md`.
+
+\- \*\*El módulo CN3791 tiene dos LEDs de estado y consumen del panel\*\* (confirmado por Mau, 2026-08-09): \*\*rojo\*\* mientras carga, \*\*azul\*\* con la carga completa. \*\*Sólo encienden cuando el panel entrega\*\*, así que no drenan la batería de noche — verificado en los datos: `solar_mA` va a −0,2 mA en la oscuridad.
+
+  El azul es el que se mide fácil, porque es el que queda encendido en la fase de corte donde no hay corriente de carga que lo tape: son los \*\*\~6,5 mA a \~14 V ≈ 90 mW\*\* del piso de esa fase. Sobre las \~2,2 h diarias que el sistema pasa cortado, son del orden de \*\*50 mAh/día equivalentes\*\* en la batería — comparable a todo el consumo diario del nodo (\~47 mAh/día).
+
+  Hoy no duele porque el azul enciende justo cuando sobra energía, y el rojo (menor caída directa, menos consumo) es el que está durante la carga. \*\*El diseño del módulo acertó\*\*: el LED más caro es el que prende cuando la energía es gratis. Pero en una racha de días nublados esos 90 mW salen del presupuesto, así que si alguna vez hay que exprimir autonomía, desoldar el azul es la palanca — misma lógica que la regla de desoldar LEDs de los módulos Sunfounder.
 
 \- \*\*GPIO8 LOW en boot\*\* — deshabilita mensajes ROM por UART0. Sin impacto en operación del firmware.
 
