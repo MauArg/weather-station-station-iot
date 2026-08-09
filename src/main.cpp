@@ -300,6 +300,17 @@ void handleCommand(const Command& cmd) {
 
     if (!cmd.valid) {
         LOG_E("Invalid command — continuing with normal flow");
+        // Clear it, for the same reason CONFIG, CALIBRATE and the default case
+        // below do. This path was the one that got missed: a command the node
+        // cannot parse stayed retained forever, re-read on every wake, with the
+        // single retained slot jammed — no service mode, no log_on, nothing.
+        //
+        // Newly reachable without anyone doing it by hand: the backend can now
+        // publish commands on its own, so a backend that knows a command this
+        // firmware does not would wedge the slot silently. Discarding what we
+        // cannot understand is the correct answer to that, and the operator can
+        // always republish.
+        clearRetainedCommand();
         publishTelemetry();
         goToDeepSleep();
         return;
