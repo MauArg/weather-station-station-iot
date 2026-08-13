@@ -96,7 +96,7 @@ Reconciliado con el estado real al 2026-07-11 (el snapshot original venía del p
 - ⏳ **Modos adaptativos de firmware** (día/noche por voltaje solar, tiers de energía por voltaje de batería) — **verificado 2026-07-29: no está implementado.** `src/battery.h` existe pero está vacío (0 bytes), `SLEEP_INTERVAL_SEC` es fijo, y `sensors_railsOn()` enciende los dos rails incondicionalmente (el TODO sigue ahí). Los umbrales de `componentes_y_conexiones.md` son diseño en papel. **Corrección de premisa**: los tiers no ahorran en deep sleep — GPIO7/GPIO8 no son RTC GPIOs en el ESP32-C3, así que al dormir quedan sin drive y el pull-down de 9,9 kΩ corta ambos rails solo. El ahorro real está en T3/T4, que cambian el intervalo de sleep.
 - ✅ **Bajo consumo — dos fixes en campo (2026-07-29)**: INA219 en power-down entre ciclos (`1.4.0`) y warmup del DHT22 en paralelo con la red (`1.5.0`). Ver `../STATUS.md` → "Power management".
 - ⏳ **Calibración de lluvia en Grafana** — `rain_wet_ref=0.3` sigue siendo un placeholder, falta dato real de lluvia intensa.
-- ⏳ **Medir el consumo de reposo con multímetro** — ~3,2 mA de los 5,10 mA totales están sin explicar (63% del presupuesto). No hay firmware que lo resuelva: el INA219 se apaga al dormir. **Es la medición de mayor valor pendiente.** Ver `componentes_y_conexiones.md`.
+- ⏳ **Medir el consumo de reposo con multímetro** — ~3,2 mA de los 5,10 mA totales están sin explicar (63% del presupuesto). No hay firmware que lo resuelva: el INA219 se apaga al dormir. **Es la medición de mayor valor pendiente.** **Procedimiento de banco listo para ejecutar en [`medicion_consumo_reposo.md`](./medicion_consumo_reposo.md)** (2026-08-11): tres mediciones, empezando por las que no tienen ráfagas de WiFi porque la SuperMini se desenchufa del zócalo sin desoldar. Contexto en `componentes_y_conexiones.md`.
 - ⏳ **Integrar la energía de la ventana activa en el firmware** (`active_mAs` + `awake_ms` en el payload, promediado por hardware del INA219) — acordado 2026-08-02, sin empezar. Ver la sección dedicada más abajo. Hacerlo **después** de medir el reposo.
 - ❓ **Alcance de WiFi** — faltaban ~5m de cobertura; se subió la potencia de transmisión del TP-Link AX3000 a "High" como primer intento, resultado sin confirmar en esta sesión.
 
@@ -154,6 +154,49 @@ El chip promedia internamente; se lee un registro y sale la media. Cero costo de
 1. `Adafruit_INA219 @ 1.2.1` **no expone el promediado**. Los `setCalibration_*()` arman el registro con `12BIT_1S_532US` hardcodeado. Hay que escribir el registro `0x00` por `Wire` **después** de llamar a `setCalibration_*()`, o el calibrado lo pisa. El header define constantes tipo `INA219_CONFIG_SADCRES_12BIT_128S_69MS` — **verificar los nombres exactos en el header instalado**, no están confirmados.
 2. Durante esa ventana el ESP32 está ocupado con WiFi. Un loop bloqueante de 2,3 s no es viable. Salidas: leer en los puntos de transición (antes de WiFi, tras conectar, tras publicar, antes de dormir) acumulando `P × Δt`, o disparar las lecturas desde un timer.
 3. Subir el tiempo de conversión alarga el `sensors_read()`; medir el impacto sobre la ventana despierta, que es justamente lo que se está tratando de no inflar.
+
+### Verificación contra el código (2026-08-11) — cuatro correcciones al diseño de arriba
+
+Revisado el firmware `1.18.0` y la librería instalada (`Adafruit_INA219 @ 1.2.1`) antes de implementar. Lo de arriba se escribió en papel; esto es lo que dice el código.
+
+**1. Hoy el INA219 está en power-down durante todo el burst de WiFi.** Es el hallazgo que cambia el diseño. La secuencia real del ciclo normal:
+
+| línea | qué pasa | INA219 |
+|---|---|---|
+| `main.cpp:65` | `Wire.begin()` | power-down, heredado del ciclo anterior |
+| `main.cpp:101` | `sensors_railsOn()` | power-down |
+| `main.cpp:103-107` | WiFi + MQTT + espera del retenido (~1,3-2 s) | **power-down** |
+| `main.cpp:110` | `sensors_init()` → `begin()` → `setCalibration_32V_2A()` | recién acá arranca a convertir |
+| `main.cpp:446` | `sensors_read()` — la muestra publicada | continuo, 532 µs |
+| `main.cpp:573` | `sensors_sleepMonitors()` | power-down otra vez |
+
+El `1.4.0` los puso en power-down para ahorrar, el registro de configuración sobrevive el deep sleep (cuelgan del 3V3 siempre alimentado) y nada los despierta hasta `begin()`, que corre **después** de la red.
+
+**Corrige la premisa de la sección de arriba**: la muestra no "cae aleatoriamente dentro o fuera del burst". Cae **sistemáticamente en la fase tranquila**, en la cola de lectura de sensores con la radio asociada pero ociosa. Sesga bajo de forma consistente, no aleatoria — que es peor para presupuestar, porque un sesgo sistemático no se promedia solo.
+
+**Consecuencia**: cualquier versión de esto empieza por despertar el INA219 arriba de `setup()`. Costo de tenerlo convirtiendo toda la ventana en vez de sólo la cola: ~1 mAh/día sobre 122, un 0,8%.
+
+**2. `powerSave()` preserva los bits de promediado; `begin()` los destruye.** `powerSave()` hace read-modify-write sobre los bits 2:0 nada más (`Adafruit_BusIO_RegisterBits(&config_reg, 3, 0)`), así que la configuración de ADC sobrevive el ciclo dormir/despertar. Pero `setCalibration_32V_2A()` reescribe el registro **entero** con `BADCRES_12BIT | SADCRES_12BIT_1S_532US` hardcodeado (`Adafruit_INA219.cpp:265`). **El override va después de cada `begin()`**, no una sola vez.
+
+**3. Obstáculo 1: resuelto.** Los nombres de constantes que figuraban como "sin confirmar" existen tal cual en el header instalado — `INA219_CONFIG_SADCRES_12BIT_128S_69MS`, `INA219_CONFIG_BADCRES_12BIT_128S_69MS`. Sigue sin haber API pública para escribir config, pero un `Wire` crudo al registro `0x00` alcanza.
+
+**4. El "~33 promedios que cubren casi el 100% de la ventana" es optimista como está escrito.** En `SANDBVOLT_CONTINUOUS` el chip alterna shunt y bus, así que los tiempos se **suman**: con 128 muestras en los dos, el loop es 68,1 + 68,1 = **136 ms** y la corriente se integra sólo el **50%** del tiempo → ~17 promedios en 2,3 s, no 33. Para llegar a los 33 con ~99% de cobertura de corriente hay que dejar **SADC en 128S y BADC corto** — asimétrico, que la sección de arriba no especificaba.
+
+**Y el obstáculo 3 se disuelve solo.** El temor de que subir el tiempo de conversión inflara `sensors_read()` no aplica si el chip se despierta arriba de `setup()`: para cuando llega la lectura ya lleva ~2 s convirtiendo de corrido y hay decenas de promedios completos esperando en el registro. No agrega latencia.
+
+**Ojo con una trampa al implementar el paso 2**: la librería no consulta el bit CNVR (conversion ready), así que dos lecturas más rápidas que el tiempo de conversión devuelven **el mismo valor**. En un loop de integración eso sería doble conteo — hay que espaciarlas por lo menos un tiempo de conversión.
+
+**5. La mina de N8N no se dispara con el promediado por hardware** (confirmado el 2026-08-13, cerrando el "a confirmar" de `../STATUS.md` → pendiente 3 del indicador de SoC).
+
+El riesgo anotado era: N8N escribe `${p.solar_mW}i` y `${p.system_mW}i` como enteros de Line Protocol, y eso funciona **por casualidad** porque `ina219_powerMultiplier_mW = 2` con la calibración 32V/2A. Un valor fraccionario como `256.4i` es inválido y **InfluxDB rechaza el write entero**.
+
+**No aplica al promediado por hardware.** El promediado ocurre *dentro del ADC del chip*, antes de que calcule el registro POWER, que sigue siendo un entero de 16 bits. `getPower_mW()` hace `getPower_raw() * 2`, así que la potencia sigue saliendo múltiplo entero de 2. **Line Protocol válido, sin tocar N8N.**
+
+> ⚠️ **Sí aplicaría a un promedio por software.** Si en el paso 2 se acumula y se divide en el firmware, o si alguna vez se cambia la calibración a `32V_1A` (`powerMultiplier = 0.8`) o `16V_400mA` (`= 1.0` pero con `currentDivider` distinto), la potencia deja de ser entera y hay que arreglar N8N **antes** de flashear. Los campos `*_mA` no corren riesgo: `getCurrent_mA()` divide por 10 y ya emite fraccionarios hoy, así que N8N los escribe como float.
+
+**Alcance acordado con Mau (2026-08-11)**: se hace en dos pasos, primero el promediado por hardware sólo-firmware y después la integración de la ventana completa. Pero **antes va la medición del reposo con multímetro** — ver `medicion_consumo_reposo.md`, que tiene el procedimiento listo.
+
+**Actualización (2026-08-13)**: la sesión del indicador de SoC agregó un orden propio — *backend primero, firmware después*, y **el backend ya está hecho y desplegado** (ventana compartida con latch histerético, backend `1.5.0`). No contradice lo de acá: el promediado ataca ruido de muestra en escala de ms y esa lógica detecta eventos sobre ventanas de 15 min, así que son complementarios y el firmware la mejora sin obligar a recalibrar nada. La fila queda: **reposo con multímetro → paso 1 (firmware) → paso 2 (cadena completa)**.
 
 ### ⚠️ Advertencia de prioridad
 
