@@ -319,7 +319,19 @@
 //   based on battery threshold — implement in battery.h
 
 // ─── New sensor pins ──────────────────────────────────────────────────────────
-#define PIN_DS18B20         10  // OneWire outdoor temperature (always-on)
+// The DS18B20 reads the ENCLOSURE, not the outdoors — this line said "outdoor"
+// until 2026-08-20 and it was never true of the deployed hardware. Three things
+// agree: the dashboard has always labelled it "DS18B20 (enclosure)"; the warmup
+// note above uses it as the DHT22's reference, which only means something if both
+// breathe the same air; and 7 days of InfluxDB put its mean at 15.5 °C alongside
+// the DHT22's 15.1 °C, while the outdoor SHT31 sat at 12.7 °C. Outdoor
+// temperature is temperature_c, from the SHT31 on Rail A.
+//
+// Always-on because it hangs off its own OneWire pin rather than a switched rail.
+// Worth keeping in mind for the low-power TODO above: if Rail B ever does go
+// down at Tier 2 this probe keeps reporting while the DHT22 stops, so the
+// enclosure would still have a thermometer but no humidity and no dew point.
+#define PIN_DS18B20         10  // OneWire enclosure temperature (always-on)
 #define PIN_DHT22            0  // DHT22 DATA (Rail B) — same pin as the former DHT11
 #define PIN_PHOTORESISTOR    3  // Photoresistor ADC (Rail B)
 #define PIN_RAIN_SENSOR      4  // Rain sensor AO ADC (Rail B)
