@@ -1,13 +1,16 @@
-# Nodo V2 — diseño tentativo inicial (rev. 2026-11-07)
+# Nodo V2 — diseño tentativo inicial (rev. 2026-11-07b: PCBA)
 
 > **Estado: borrador para empezar el esquemático en KiCad, no congelado.** Sale del cruce de tres análisis (firmware/GPIO, arquitectura de PCB, energía/componentes) sobre los PDFs de Heltec (`Wireless Tracker1.1.pdf`, `HTIT-Tracker_V0.5.pdf`, `Compact_Weather_Station_User_Guide.pdf`) y el datasheet del LDO (`CE6260.PDF`). Etiquetas: **[C]** citado de datasheet/esquemático, **[M]** medido, **[I]** inferido, **[?]** sin verificar. Las pruebas de banco que hay que hacer **antes de mandar a fabricar** están al final.
+>
+> Rev. 2026-11-07b: **la placa pasa a PCBA de JLCPCB** (todo el SMD en la cara superior, ensamblado Economic; Mau suelda sólo el THT). Se eliminan los módulos breakout, se suman dos placas satélite (cabezal de aire y veleta), el BMP390 se reemplaza por el BMP581 por falta de stock, y se incorporan el expansor I2C con la inhibición de carga, el BOM con números LCSC (§9) y el costo.
 >
 > Rev. 2026-11-07: el mapa de GPIOs pasa al **plan B** porque el TFT va soldado; el viento es **continuo** (el ULP pasa a ser obligatorio); la veleta es **AS5600 por salida analógica**; **todos los conectores son GX12-4**; se suman el CE6260 y las temperaturas reales de la caja.
 
 ## Premisas (decididas por Mau)
 
 - Módulo principal: **Heltec Wireless Tracker V1.2** (ESP32-S3FN8 + SX1262 + GNSS UC6580). **El TFT va soldado y no se puede retirar.**
-- **Una sola PCB**, 2 capas, fabricada en JLCPCB/PCBWay y **soldada a mano** (THT o SMD 0805+/SOT-23/SOIC/TSSOP; los sensores van en módulo).
+- **Una sola PCB principal**, 2 capas, **fabricada y ensamblada en JLCPCB (PCBA Economic, todo el SMD en top)**. Mau suelda sólo el THT: zócalo de la Heltec, JST-XH, headers, jumper de batería y conector de batería. **Sin módulos breakout**: los chips van en la placa. El CN3722 y los repuestos llegan desde LCSC en el mismo envío (ver §9).
+- **Dos placas satélite propias**, también por PCBA: `sat_aire` (SHT45 + BMP581) para el Stevenson y `sat_veleta` (AS5600). Van en el mismo carrito o en un segundo pedido.
 - **El mismo diseño sirve para los dos despliegues**: reemplazar la V1 en casa, o estación remota a ~2,5 km sólo con LoRa.
 - Alcance: todo lo de la V1 más **viento continuo** (promedio y ráfaga, contando dormido), GNSS activo y puertos de expansión.
 - Conectores **GX12 de 4 pines** (Mau tiene machos y hembras, todos de 4) en la base de la caja, en lugar de cables por prensaestopas.
@@ -119,11 +122,13 @@ Con el TFT conectado, los pines 38–42 quedan para el TFT. Usarlos para otra co
 - desoldando el LED de GPIO18 y moviendo el DE a una salida I2C;
 - con un expansor I2C (PCF8574/TCA9534) para enables y señales lentas, como CHRG/DONE.
 
-**Un solo controlador I2C, con el segmento exterior aislado por un repetidor** con EN (familia TCA9517/PCA9517A, SOIC-8 o VSSOP-8). El EN del repetidor se ata a EN_EXT, así que no gasta GPIO.
+**Un solo controlador I2C, con el segmento exterior aislado por un repetidor** con EN (familia TCA9517DR, SOIC-8 [C, SCPS242D]). El EN del repetidor se ata a EN_EXT, así que no gasta GPIO.
 - Si el cable exterior se moja o queda en corto (como el 31/10), con el repetidor deshabilitado el bus interno sigue andando.
-- **[?] Verificar en el datasheet**:
-  - que el lado B quede en alta impedancia cuando está sin alimentación o deshabilitado;
-  - el offset de nivel bajo del lado A, que impone límites al VOL de los dispositivos.
+- Verificado en el datasheet [C, SCPS242D]:
+  - "High-Impedance I2C Pins When Powered-Off".
+  - **Conexión**: lado A al ESP32 (VCCA = 3V3 permanente); lado B al exterior (VCCB = 3V3_EXT, pull-ups a 3V3_EXT). Con el rail apagado se apagan juntos el chip, los pull-ups y los sensores. Eso además protege al BMP581, que se daña si se le mantiene un pin en alto con VDDIO apagado [C].
+  - **Límite**: con el cable en corto y el repetidor **habilitado**, el lado A también cae. El aislamiento existe sólo con EN en bajo o con VCCB apagado. El firmware tiene que detectar el bus trabado y cortar 3V3_EXT.
+  - **Lado B**: VOL de 0,45–0,6 V; los esclavos tienen que tener VIL < 0,4 V. Queda justo con el SHT4x: medir el ACK con osciloscopio.
 - Reemplaza la idea de dos controladores, que no entra con el TFT puesto.
 
 **Mapa de direcciones (un solo espacio)**:
@@ -131,10 +136,11 @@ Con el TFT conectado, los pines 38–42 quedan para el TFT. Usarlos para otra co
 | Dispositivo | Dirección | Segmento |
 |---|---|---|
 | SHT45 | 0x44 | exterior |
-| BMP390 | 0x77 | exterior |
-| SHT40-**BD1B** | **0x45** | interior (no puede ser 0x44) |
+| BMP581 | 0x47 | exterior (reemplaza al BMP390, que no tiene stock en JLC) |
+| SHT40-**BD1B** | **0x45** | interior (no puede ser 0x44); en el 3V3 permanente |
+| TCA9534 (expansor) | 0x20 | interior: CHRG, DONE, CHG_INH, reservas |
 | INA226 batería / panel | 0x40 / 0x41 | interior |
-| VEML7700 (luz, reemplaza al LDR) | 0x10 | interior, mirando por la ventana de la caja |
+| VEML7700 (luz, reemplaza al LDR) | 0x10 | interior; en el 3V3 permanente. **Es de vista lateral**: mira paralelo a la PCB |
 
 **Conteo de viento continuo**:
 - El ULP-FSM sondea GPIO17 y GPIO7 con debounce por muestras, y los contadores quedan en la memoria RTC.
@@ -151,13 +157,14 @@ Con el TFT conectado, los pines 38–42 quedan para el TFT. Usarlos para otra co
   | Rail | Enable | Alimenta |
   |---|---|---|
   | `3V3_EXT` | EN_EXT | Stevenson, AS5600, repetidor I2C |
-  | `3V3_INT` | EN_INT | rain sensor, DS18B20, SHT40, VEML7700 |
+  | `3V3_INT` | EN_INT | rain sensor y DS18B20 |
   | `3V3_EXP` | EN_EXP | RS485 y expansión |
 
 - **Confirmar que el EN no tenga pull-up interno.**
 - Pull-down externo de 100 k en cada EN, para que el rail arranque apagado en boot, brown-out y deep sleep.
 - Antes de llamar a `gpio_deep_sleep_hold_en()`, poner los EN en 0.
-- Los INA226 van al 3V3 permanente, en power-down entre ciclos.
+- Al 3V3 permanente van el INA226 (en power-down entre ciclos), el **SHT40 y el VEML7700** (≈ 0,4 y 0,5 µA en reposo) y el TCA9534. Si colgaran de un rail conmutado, los pull-ups del bus interno los alimentarían por SDA/SCL.
+- El pin ON del TPS22917 tiene "Smart Pulldown" pero **no se puede dejar flotando** [C]: se mantienen los 100 k externos.
 - **Pull-ups de I2C del lado conmutado** de cada segmento. Antes de cortar el rail, el firmware pone SDA/SCL en alta impedancia.
 - GND común a todo.
 
@@ -175,7 +182,7 @@ Los GX12 van montados en la base de la caja, mirando hacia abajo, con pigtail a 
 
 | Conector (caja) | Pin 3 / Pin 4 | Notas |
 |---|---|---|
-| AIRE (hembra) | SDA / SCL (segmento I2C exterior) | SHT45 + BMP390. VPORT = 3V3_EXT. |
+| AIRE (hembra) | SDA / SCL (segmento I2C exterior) | Placa `sat_aire` (SHT45 + BMP581). VPORT = 3V3_EXT. |
 | LLUVIA (hembra) | PLUV (reed a GND) / RAIN_AO | PLUV con pull-up a 3V3 permanente en la PCB; rain sensor en 3V3_INT. |
 | VIENTO (hembra) | ANEMO (reed a GND) / VANE_AO | AS5600 por su **salida analógica OUT**, alimentado por VPORT = 3V3_EXT sólo en la ventana despierta. El reed del anemómetro tiene pull-up permanente en la PCB, independiente de VPORT, para que el ULP cuente dormido. DIR del AS5600 fijo en la cabeza. |
 | EXP (hembra) | A / B (RS485) | VPORT = 3V3_EXP. |
@@ -200,17 +207,54 @@ Los GX12 van montados en la base de la caja, mirando hacia abajo, con pigtail a 
 
 | Función | V1 | V2 propuesto |
 |---|---|---|
-| T/HR exterior | SHT31 | **SHT45-AD1F** (membrana + heater), módulo, 0x44 |
-| Presión | BMP180/085 | **BMP390**, módulo, 0x77 |
+| T/HR exterior | SHT31 | **SHT45-AD1F** (membrana + heater) en `sat_aire`, 0x44 |
+| Presión | BMP180/085 | **BMP581** (C5362283) en `sat_aire`, 0x47. El BMP390 tiene stock 0 en JLC; alternativas: BMP388 (0x77) o pre-order del BMP390 |
 | T/HR caja | DHT22 | **SHT40-BD1B**, 0x45 |
 | Luz | LDR (ADC) | **VEML7700** (lux calibrados), 0x10. Libera el GPIO del DS18B20. |
 | Temp. batería/caja | DS18B20 | DS18B20 (GPIO5, misma serie) + NTC 10 k B3950 del cargador, los dos pegados a la batería |
 | Energía | 2× INA219 | 1–2× **INA226** |
 | Viento | — | Reeds (anemómetro + pluviómetro) por ULP; veleta AS5600 analógica |
 
+## 5b. Inhibición de carga por temperatura (dos capas)
+
+- **Hardware, sin firmware**: el NTC 10 k B3950 (de gota, con cable, **pegado a la batería** y llegando por un JST de 2 pines) va al pin TEMP del CN3722. Con su pull-up de 50 µA y umbrales de 0,175 V y 1,61 V [C], la carga queda permitida entre **~1 °C y ~51 °C** [I]. Cubre lo crítico, el frío (39 días bajo 0 °C), aunque el firmware esté colgado.
+- **Firmware**: el 51 °C está por encima de los 45 °C de una Li-ion típica. El TCA9534 maneja `CHG_INH` → 2N7002 → tira el pin TEMP a GND y corta la carga [C, CN3722 fig. 3]. El firmware lo activa con DS18B20 > 45 °C. El mismo expansor lee CHRG y DONE.
+- **El cargador propio de la Heltec (TP4054) no tiene NTC**: con el USB enchufado carga la celda en paralelo. **Regla operativa**: nada de service por USB con la caja bajo 0 °C. Si se puede, medir la corriente en JP3 con el USB conectado.
+
 ## 6. PCB
 
-- **Hojas**: `01_power_solar`, `02_heltec`, `03_rails`, `04_port` (una instancia por GX12), `05_sensors_int`, `06_expansion` (RS485 3V3 SOIC-8 + header I2C/UART interno), y el repetidor I2C en `03_rails` o en `04_port` del puerto AIRE.
+- **Hojas**:
+
+  | Hoja | Contenido |
+  |---|---|
+  | `01_power_solar` | TVS, Schottky, CN3722 con inductor, AO3401A y R_CS; JST del NTC; header de respaldo para el CN3791; 2N7002 de CHG_INH |
+  | `01b_power_meas` | INA226 con shunt Kelvin; jumper de batería |
+  | `02_heltec` | zócalo, conector a JP3, test points, keepouts |
+  | `03_rails` | 3× TPS22917, TCA9534 |
+  | `04_port` (×4) | front-end de puerto; `04a_i2c_ext` agrega el TCA9517 en AIRE |
+  | `05_sensors_int` | península del SHT40, VEML7700, conector del DS18B20 |
+  | `06_expansion` | SP3485, header I2C/UART |
+  | `07_mech` | agujeros, ranuras, versión |
+
+  Los satélites `sat_aire` y `sat_veleta` van como **proyectos KiCad aparte**.
+- **PCBA Economic, todo el SMD en F.Cu** [C, capacidades de JLC al 2026-11-07]: una cara, placa de 0,8–1,6 mm, sin rieles ni fiduciales, de 2 a 50 placas ensambladas.
+  - Pasivos de **0603 como mínimo**, para poder retrabajar. R_CS, shunt y capacitores de bulk en 0805/1206.
+  - Unificar valores para minimizar las partes Extended.
+  - El THT lleva **Exclude from BOM/POS** (o DNP).
+  - Dejar **≥ 2–3 mm entre pads THT y SMD chico**, para que entre la punta del soldador.
+  - **Nada SMD caliente bajo el zócalo** de la Heltec. Mejor dejarlo libre.
+- **Reglas de diseño**:
+  - Mínimos de 0,15/0,15 mm (el mínimo de JLC es 0,10).
+  - Una sola vía de 0,6/0,3 mm.
+  - Cobre a borde de 0,5 mm.
+  - **Texto de serigrafía de 1,0 mm con línea de 0,15**: hoy el proyecto está en 0,8 mm y **hay que cambiarlo**.
+- **SHT40 en una península**: ranura fresada en U de 1–2 mm, lengüeta de ~10×12 mm sin plano de GND, en la esquina más fría, en diagonal opuesta al CN3722 y al inductor. Ensayo: cargar a 0,5 A con la caja cerrada y comparar contra el DS18B20.
+- **VEML7700 (vista lateral)**: va en el **borde de la placa que enfrenta la ventana** de la caja, o en una pestaña o plaquita aparte si la ventana queda en otro plano. **Depende de la geometría de la caja.**
+- **Flujo en KiCad**:
+  - Campo `LCSC` en cada símbolo, cargado desde la Tabla de campos de símbolo.
+  - Plugin **kicad-jlcpcb-tools** (Bouni, compatible con KiCad 10), que genera Gerber, BOM y CPL. Correrlo con todo commiteado.
+  - **Antes de pagar, revisar en la vista previa de JLC la rotación de cada IC, diodo y TVS.** Hace falta una marca de pin 1 y de cátodo en la serigrafía.
+  - Librería propia del proyecto (`ws_v2`) para las huellas importadas de LCSC/EasyEDA y la de la Heltec corregida. `LIB_TR3BOL_ESENCIAL` no se toca.
 - **Heltec en zócalo** (tiras hembra 1×8 + 1×16 de pines torneados), sujeta con brida o clip. Altura ≈ 23 mm. **El TFT queda a la vista**, así que la PCB se orienta para poder leerlo con la tapa abierta.
 - **Correcciones a la huella actual** `miHeltecV1.2_DIP_25_LongPads`:
   - (a) Borrar los pads `NC_42` / `NC_9`, que caen debajo de **la antena WiFi de resorte**.
@@ -242,9 +286,49 @@ Los GX12 van montados en la base de la caja, mirando hacia abajo, con pigtail a 
 7. Duración del cierre del reed (analizador lógico).
 8. Si se puede, medir el reposo de la V1 (M1 de `medicion_consumo_reposo.md`).
 
+## 9. PCBA: BOM, costo y envío [stock del API de JLC al 2026-11-07]
+
+| Función | Part number | LCSC | Tipo | Encapsulado | Stock |
+|---|---|---|---|---|---|
+| Cargador | CN3722 | C77905 | Ext | TSSOP-16 | 3386 |
+| P-MOSFET | AO3401A | C15127 | Basic | SOT-23 | 1,69 M |
+| Schottky D1/D2 | SS34 | C8678 | Basic | SMA | 3 M (**riesgo de fuga, ver abajo**) |
+| Inductor 47 µH | SWPA6045S470MT | C36414 | Ext | 6×6 | 10 716 (Isat [?]) |
+| R_CS 0,4 Ω | 4× 0,1 Ω 1206 en serie | C25334 | Basic | 1206 | 661 k |
+| TVS panel | SMBJ16CA | C151255 | Ext | SMB | 4864 |
+| Monitor de batería | INA226AIDGSR | C49851 | Ext | VSSOP-10 | 16 063 |
+| Shunt | 0,1 Ω 1206 | C25334 | Basic | 1206 | — |
+| Load switch ×3 | TPS22917DBVR | C2681320 | Ext | SOT-23-6 | 3735 |
+| Repetidor I2C | TCA9517DR | C182421 | Ext | SOIC-8 | 6073 |
+| Expansor | TCA9534PWR | C783615 | Ext | TSSOP-16 | 8970 |
+| CHG_INH | 2N7002 | C8545 | Basic | SOT-23 | 4,18 M |
+| T/HR caja | SHT40-BD1B-R2 | C7461849 | Ext | DFN-4 | **2305** |
+| Luz | VEML7700-TT | C1850416 | Ext | lateral | 6724 |
+| RS485 | SP3485EN-L/TR | C8963 | Basic | SOIC-8 | 342 917 |
+| ESD | PESD5V0S2BT | C49338 | Ext | SOT-23 | 8682 |
+| Pasivos | 10 k C25804 · 100 k C25803 · 1 k C21190 · 4,7 k C23162 · 2,2 k C4190 · 100 nF C14663 · 1 µF/50 V 0603 C15849 · 10 µF/25 V 0805 C15850 · 10 µF/50 V 1206 C13585 · 1 nF C1588 · 10 nF C57112 | — | Basic | 0603–1206 | — |
+| `sat_aire` | SHT45-AD1F-R2 · BMP581 | C5360602 · C5362283 | Ext | DFN / LGA | 3273 · 9388 |
+| `sat_veleta` | AS5600-ASOT | C499458 | Ext | SOIC-8 | **352** |
+
+- La placa principal tiene **10 partes Extended**, ≈ USD 31 de carga de feeders.
+- **Revalidar el stock el día del pedido**: el SHT40-BD1B y el AS5600 tienen stock bajo.
+- **Costo estimado** [I sobre la tarifa citada, actualizada el 22/10/2026], para 5 PCB con 2 ensambladas, sin la PCB desnuda ni el flete:
+  - placa principal: ~USD 80–85;
+  - con las dos satélites: ~USD 130–135.
+  - La PCB, el flete y el IVA salen del cotizador.
+- **Repuestos en el mismo envío**: LCSC permite combinar su pedido con el de JLC si tienen la misma moneda y el mismo customer ID [C]. Ahí van CN3722, AS5600 y conectores extra.
+- **Aduana (courier, ARCA novedad 5939 del 06/10/2026)** [C]:
+  - Franquicia de USD 400.
+  - Tope de USD 3000 por envío.
+  - **Hasta 3 unidades de la misma especie.** Hay que consultarle al courier cómo cuenta 5 PCB iguales.
+- **Consumo de reposo del cargador** [C/I]: de noche la batería alimenta BAT/CSP del CN3722 (~10 µA) más la fuga inversa de D1/D2. Con la SS34 esa fuga es incierta en caliente. **Medir con el jumper, de noche y en caliente, antes de cerrar la elección del Schottky.** Si hace falta, elegir uno de baja fuga.
+
 ## 8. Preguntas abiertas
 
-- Medidas internas exactas de la caja, tetones, y orientación de montaje (PCB vertical u horizontal), que afecta la vista de cielo del GNSS.
+- Medidas internas exactas de la caja, tetones, y orientación de montaje (PCB vertical u horizontal), que afecta la vista de cielo del GNSS. **También dónde está la ventana**, que define dónde va el VEML7700 (vista lateral).
+- ¿El BMP581 (0x47, driver nuevo) o esperar un pre-order del BMP390?
+- ¿Las satélites van en el mismo pedido o después de validar la principal?
+- ¿Dónde está físicamente JP3 en la Heltec (cara superior o inferior)? Define por dónde pasa el pigtail con el módulo en el zócalo.
 - ¿Compra por LCSC junto con la PCB o por MercadoLibre?
 - ¿La expansión RS485 tiene que alimentar sensores de 5–24 V? Si es así, va en un conector distinto del GX12-4.
 - Largo del cable al mástil del viento.
@@ -254,8 +338,10 @@ Los GX12 van montados en la base de la caja, mirando hacia abajo, con pigtail a 
 
 - ESP32-S3 Technical Reference Manual (ULP, pads en sleep).
 - AS5600 (salida OUT, rangos).
-- TCA9517 / PCA9517A (repetidor).
-- VEML7700.
+- ~~TCA9517~~ (bajado por el agente); PCA9517A como segunda fuente.
+- Sunlord SWPA6045S470MT (Isat).
+- Sensirion SHT4x Handling Instructions / Design Guide.
+- Vishay "Designing the VEML7700 Into an Application".
 - Catálogo JST XH.
 - Datasheet de la celda elegida (rango de temperatura de carga).
 - ~~CE6260B33M~~ (bajado: `CE6260.PDF`).
