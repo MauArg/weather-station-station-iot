@@ -10,7 +10,7 @@
 
 - Módulo principal: **Heltec Wireless Tracker V1.2** (ESP32-S3FN8 + SX1262 + GNSS UC6580). **El TFT va soldado y no se puede retirar.**
 - **Una sola PCB principal**, 2 capas, **fabricada y ensamblada en JLCPCB (PCBA Economic, todo el SMD en top)**. Mau suelda sólo el THT: zócalo de la Heltec, JST-XH, headers, jumper de batería y conector de batería. **Sin módulos breakout**: los chips van en la placa. El CN3722 y los repuestos llegan desde LCSC en el mismo envío (ver §9).
-- **Dos placas satélite propias**, también por PCBA: `sat_aire` (SHT45 + BMP581) para el Stevenson y `sat_veleta` (AS5600). Van en el mismo carrito o en un segundo pedido.
+- **Dos placas satélite propias**, también por PCBA: `sat_aire` (SHT45 + BMP581) para el Stevenson y `sat_veleta` (AS5600). **Decidido (2026-11-07): van en el mismo pedido que la principal**, y se aprovecha el envío para sumar todo lo que se pueda de LCSC (repuestos, conectores). Ojo con el tope de 3 unidades de la misma especie (§9).
 - **El mismo diseño sirve para los dos despliegues**: reemplazar la V1 en casa, o estación remota a ~2,5 km sólo con LoRa.
 - Alcance: todo lo de la V1 más **viento continuo** (promedio y ráfaga, contando dormido), GNSS activo y puertos de expansión.
 - Conectores **GX12 de 4 pines** (Mau tiene machos y hembras, todos de 4) en la base de la caja, en lugar de cables por prensaestopas.
@@ -286,6 +286,40 @@ Los GX12 van montados en la base de la caja, mirando hacia abajo, con pigtail a 
 7. Duración del cierre del reed (analizador lógico).
 8. Si se puede, medir el reposo de la V1 (M1 de `medicion_consumo_reposo.md`).
 
+## 8b. Respuestas de Mau del 2026-11-07 (tarde)
+
+- **Satélites en el mismo pedido.** Todo lo que se pueda va en un solo envío.
+- **JP3 (conector de batería de la Heltec) está en la cara de abajo**, la opuesta a la pantalla. Con el módulo en el zócalo, **el conector queda mirando a la PCB principal**. Consecuencias [I]:
+  - Debajo de JP3, en la PCB principal, va un **keepout de componentes** con altura para el plug de 1,25 mm y la salida del cable. Hay que medir el plug y el radio del cable con la Heltec en la mano.
+  - Con el zócalo de ~8,5 mm puede alcanzar. Si no, usar tiras de zócalo más altas, o una **ventana fresada en la PCB** bajo JP3 por donde pase el cable.
+  - La batería se enchufa a la Heltec antes de insertarla en el zócalo. Hay que tenerlo en cuenta en el procedimiento de service.
+  - Alternativa: un cable corto desde JP3 a un JST de la PCB principal ubicado justo al lado, para no tener que desenchufar debajo del módulo.
+- **Ventana de la caja**: Mau la describe como "en la parte media, delantera, y asoma por abajo de la caja".
+  - **[pendiente de confirmar]**: ¿está en la cara frontal, en su parte baja, o en la base (mirando hacia abajo)?
+  - Si está en la cara frontal y la PCB va paralela al frente, el VEML7700, que es de vista lateral, no la ve desde la placa principal. Lo resolvería una pestaña o una plaquita en ángulo recto.
+  - Si mira hacia abajo, mediría luz reflejada del suelo: es un índice relativo, no lux de cielo.
+  - Decidir con una foto o un croquis de la caja.
+
+### BMP581 contra BMP390 [C, datasheets BST-BMP581-DS004-13 y BST-BMP390-DS002-07]
+
+| | BMP390 | BMP581 |
+|---|---|---|
+| Absoluta | ±50 Pa típ., ±0,5 hPa (0–65 °C) | ±75 Pa en **todo el rango −40…85 °C, ya incluida la deriva de soldadura** |
+| Relativa | ±3 Pa (±0,03 hPa, 25–40 °C) | similar o mejor |
+| Coef. térmico del offset | ±0,62 Pa/K | ±0,5 Pa/K |
+| Deriva a largo plazo | ±0,16 hPa/año | **±10 Pa/año** |
+| Ruido | ~1–2 Pa RMS sin filtro (aprox.) | **< 0,1 Pa RMS** nativo |
+| Elemento sensor | piezorresistivo [C] | capacitivo (de memoria [?]) |
+| Dirección I2C | 0x76/0x77 | **0x46/0x47** |
+| Stock JLC hoy | **0** | 9388 |
+| Software | librerías Arduino maduras (Adafruit) | Bosch BMP5 Sensor API, SparkFun; driver nuevo |
+| Cuidado | — | Se daña con un pin en alto y VDDIO apagado [C]: lo cubre el TCA9517 apagando todo junto |
+
+**Lectura**:
+- Para una estación (QNH, tendencia, marea barométrica), los dos sobran contra el BMP180/085 de la V1. El BMP581 es la generación nueva: menos ruido, menos deriva y especificación honesta en todo el rango de temperatura del sitio, incluido −7 °C.
+- La única contra real es el driver nuevo. Es una tarea de firmware chica, no un riesgo.
+- **Recomendación: BMP581.**
+
 ## 9. PCBA: BOM, costo y envío [stock del API de JLC al 2026-11-07]
 
 | Función | Part number | LCSC | Tipo | Encapsulado | Stock |
@@ -326,9 +360,9 @@ Los GX12 van montados en la base de la caja, mirando hacia abajo, con pigtail a 
 ## 8. Preguntas abiertas
 
 - Medidas internas exactas de la caja, tetones, y orientación de montaje (PCB vertical u horizontal), que afecta la vista de cielo del GNSS. **También dónde está la ventana**, que define dónde va el VEML7700 (vista lateral).
-- ¿El BMP581 (0x47, driver nuevo) o esperar un pre-order del BMP390?
-- ¿Las satélites van en el mismo pedido o después de validar la principal?
-- ¿Dónde está físicamente JP3 en la Heltec (cara superior o inferior)? Define por dónde pasa el pigtail con el módulo en el zócalo.
+- Confirmar el BMP581 (comparación en §8b).
+- Geometría exacta de la ventana (§8b).
+- Medir el plug del JP3 y su cable para el keepout debajo de la Heltec.
 - ¿Compra por LCSC junto con la PCB o por MercadoLibre?
 - ¿La expansión RS485 tiene que alimentar sensores de 5–24 V? Si es así, va en un conector distinto del GX12-4.
 - Largo del cable al mástil del viento.
